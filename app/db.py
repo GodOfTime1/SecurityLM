@@ -142,3 +142,6 @@ def initialize():
         db.execute("""CREATE TABLE IF NOT EXISTS request_rates (
             user_id TEXT NOT NULL, kind TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL,
             PRIMARY KEY(user_id,kind,window))""")
+
+        db.execute("""CREATE TABLE IF NOT EXISTS model_catalog (
+            id TEXT PRIMARY KEY,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1)""")

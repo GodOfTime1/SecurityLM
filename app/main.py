@@ -14,6 +14,8 @@ from .assistants import router as assistants_router
 from .chat import router as chat_router
 from .conversations import router as conversations_router
 from .tools import router as tools_router
+from .model_catalog import router as catalog_router
+from .model_selector import router as selector_router
 from .documents import MAX_BYTES, delete_document, extract_pages, store_document, replace_document
 from .retrieval import search_documents
 
@@ -34,6 +36,8 @@ app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(actions_router)
 app.include_router(tools_router)
+app.include_router(catalog_router)
+app.include_router(selector_router)
 
 
 @app.exception_handler(RequestValidationError)

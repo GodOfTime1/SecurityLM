@@ -49,6 +49,7 @@ class ModelRequest:
     question: str
     passages: list[Passage]
     tools: list[ToolSpec]
+    mode: str = "document_qa"
 
 
 @dataclass
@@ -58,6 +59,8 @@ class ModelResponse:
 
 
 def build_system_prompt(req: ModelRequest) -> str:
+    if req.mode == "model_selector":
+        return req.system_prompt
     lines = ["You are a private assistant for a company."]
     if req.purpose:
         lines.append(f"Purpose: {req.purpose}")
@@ -110,6 +113,15 @@ class EchoModel:
     """No-LLM stand-in so the whole flow works and tests run without a model server."""
 
     def generate(self, req: ModelRequest) -> ModelResponse:
+        if req.mode == "model_selector":
+            data = json.loads(req.question)
+            needs = data['explicit_requirements']
+            # Deterministic stand-in: no natural-language interpretation or performance ranking.
+            complete = bool(needs.get('task') and needs.get('deployment') and
+                            (needs.get('deployment') != 'local' or needs.get('available_memory_gb')))
+            return ModelResponse(json.dumps({'answer':'Demo selector: these catalog entries match the explicit filters. No LLM ranking was performed.',
+                'requirements':needs,'recommended_model_ids':[p.chunk_id for p in req.passages[:3]] if complete else [],
+                'follow_up_questions':[]}))
         actions = []
         if "create_ticket" in {t.name for t in req.tools} and "ticket" in req.question.lower():
             actions.append({"tool": "create_ticket", "arguments": {

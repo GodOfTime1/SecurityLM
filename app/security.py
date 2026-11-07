@@ -50,7 +50,7 @@ class SecurityMiddleware:
             except HTTPException as exc:
                 return await reject(exc.status_code, exc.detail)
             try:
-                chat = scope['method'] == 'POST' and len(parts) == 4 and parts[1] == 'conversations' and parts[3] == 'messages'
+                chat = scope['method'] == 'POST' and ((len(parts) == 4 and parts[1] == 'conversations' and parts[3] == 'messages') or path.rstrip('/') == '/model-selector/chat')
                 await asyncio.to_thread(rate_limit, user.id, chat)
             except HTTPException as exc:
                 return await JSONResponse({'detail': exc.detail}, status_code=exc.status_code,
