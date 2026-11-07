@@ -1,0 +1,43 @@
+# Virtual environments
+.venv/
+venv/
+env/
+pyvenv.cfg
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated data (SQLite databases, uploads)
+runtime/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build and packaging output
+dist/
+build/
+*.egg-info/
+*.zip
+
+# Node (only matters if the frontend lives in this same repo)
+node_modules/

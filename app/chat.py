@@ -1,0 +1,84 @@
+"""POST /conversations/{id}/messages: retrieve permitted passages, call the model, store the turn."""
+import json
+from uuid import uuid4
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+from .actions import ToolRejected, create_draft
+from .auth import User, current_user
+from .conversations import message_view, owned_conversation
+from .db import connection
+from .model_client import (ModelRequest, ModelUnavailable, Passage, ToolSpec,
+                           extract_citations, get_model_client)
+from .retrieval import search_documents
+from .tools import TOOLS
+
+router = APIRouter(prefix="/conversations", tags=["chat"])
+HISTORY_LIMIT = 10
+PASSAGE_LIMIT = 5
+MAX_PROPOSALS = 3
+
+
+class MessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+def _json_small(value, limit: int = 2000) -> str:
+    text = json.dumps(value, default=str)
+    return text if len(text) <= limit else json.dumps({"truncated": True})
+
+
+@router.post("/{conversation_id}/messages", status_code=201)
+def send_message(conversation_id: str, body: MessageIn, user: User = Depends(current_user)):
+    with connection() as db:
+        conv = owned_conversation(db, conversation_id, user)
+        assistant = db.execute("SELECT * FROM assistants WHERE id=?", (conv["assistant_id"],)).fetchone()
+        tool_names = [r["tool"] for r in db.execute(
+            "SELECT tool FROM assistant_tools WHERE assistant_id=? ORDER BY tool", (assistant["id"],)) if r["tool"] in TOOLS]
+        history = [dict(r) for r in db.execute(
+            "SELECT role, content FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT ?",
+            (conversation_id, HISTORY_LIMIT))][::-1]
+
+    # Permissions are applied inside search_documents, before anything reaches the model.
+    chunks = search_documents(user, body.content, PASSAGE_LIMIT, assistant_id=assistant["id"])
+    passages = [Passage(i, c["chunk_id"], c["filename"], c["page_number"], c["text"]) for i, c in enumerate(chunks, 1)]
+    request = ModelRequest(
+        model=assistant["model"], purpose=assistant["purpose"], system_prompt=assistant["system_prompt"],
+        history=history, question=body.content, passages=passages,
+        tools=[ToolSpec(n, TOOLS[n].description, TOOLS[n].args_model.model_json_schema()) for n in tool_names])
+    try:
+        reply = get_model_client().generate(request)
+    except ModelUnavailable as exc:
+        # Nothing is stored on failure, so the client can simply resend the same message.
+        raise HTTPException(503, str(exc)) from None
+
+    citations = extract_citations(reply.text, passages)
+    user_msg_id, bot_msg_id = str(uuid4()), str(uuid4())
+    with connection() as db:
+        owned_conversation(db, conversation_id, user)  # still exists after a slow model call
+        db.execute("INSERT INTO messages(id,conversation_id,role,content) VALUES (?,?,'user',?)",
+                   (user_msg_id, conversation_id, body.content))
+        db.execute("INSERT INTO messages(id,conversation_id,role,content,citations) VALUES (?,?,'assistant',?,?)",
+                   (bot_msg_id, conversation_id, reply.text, json.dumps(citations)))
+        db.execute("INSERT INTO tool_calls(id,message_id,tool,arguments,status,result) VALUES (?,?,?,?,'ok',?)",
+                   (str(uuid4()), bot_msg_id, "search_documents",
+                    _json_small({"query": body.content[:500], "assistant_id": assistant["id"]}),
+                    _json_small({"chunk_ids": [c["chunk_id"] for c in chunks]})))
+        for proposal in reply.actions[:MAX_PROPOSALS]:
+            tool = proposal.get("tool") if isinstance(proposal, dict) else None
+            args = proposal.get("arguments") if isinstance(proposal, dict) else None
+            try:
+                action_id = create_draft(db, conversation_id=conversation_id, message_id=bot_msg_id,
+                                         assistant_id=assistant["id"], tool=tool, arguments=args)
+                outcome = ("ok", {"action_id": action_id, "status": "draft"})
+            except ToolRejected as exc:
+                outcome = ("rejected", {"reason": str(exc)})
+            db.execute("INSERT INTO tool_calls(id,message_id,tool,arguments,status,result) VALUES (?,?,?,?,?,?)",
+                       (str(uuid4()), bot_msg_id, tool if isinstance(tool, str) and len(tool) <= 50 else "invalid",
+                        _json_small(args if isinstance(args, dict) else {}), outcome[0], _json_small(outcome[1])))
+        if not conv["title"]:
+            db.execute("UPDATE conversations SET title=? WHERE id=?", (body.content.strip()[:60], conversation_id))
+        db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+        rows = {r["id"]: r for r in db.execute("SELECT * FROM messages WHERE id IN (?,?)", (user_msg_id, bot_msg_id))}
+        return {"user_message": message_view(db, rows[user_msg_id], user),
+                "assistant_message": message_view(db, rows[bot_msg_id], user)}
