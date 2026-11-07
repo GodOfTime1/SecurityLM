@@ -50,6 +50,7 @@ class ModelRequest:
     passages: list[Passage]
     tools: list[ToolSpec]
     mode: str = "document_qa"
+    response_schema: dict | None = None
 
 
 @dataclass
@@ -137,7 +138,8 @@ class EchoModel:
 class OllamaModel:
     """Talks to a local Ollama server. URL comes from server config, never from users."""
 
-    def __init__(self, base_url: str, default_model: str, timeout: float):
+    def __init__(self, base_url: str, default_model: str, timeout: float, *, allow_remote: bool | None = None):
+        remote_allowed = (os.environ.get("OLLAMA_ALLOW_REMOTE") == "1") if allow_remote is None else allow_remote
         try:
             parsed = urlsplit(base_url)
             host = parsed.hostname
@@ -150,7 +152,7 @@ class OllamaModel:
                 local = host.lower() == "localhost"
             if parsed.scheme not in {"http", "https"}:
                 raise ValueError
-            if not local and (parsed.scheme != "https" or os.environ.get("OLLAMA_ALLOW_REMOTE") != "1"):
+            if not local and (parsed.scheme != "https" or not remote_allowed):
                 raise ValueError
             if not math.isfinite(timeout) or not 1 <= timeout <= 120:
                 raise ValueError
@@ -183,6 +185,8 @@ class OllamaModel:
             raise ModelUnavailable("No model is selected for this assistant")
         payload = {"model": model, "messages": build_messages(req), "stream": False,
                    "options": {"temperature": 0.2, "num_predict": 1024, "num_ctx": 8192}}
+        if req.response_schema is not None:
+            payload["format"] = req.response_schema
         async def bounded_request():
             # HTTPX's read timeout is per chunk. This also bounds total time.
             return await asyncio.wait_for(self._request(payload), timeout=self.timeout)

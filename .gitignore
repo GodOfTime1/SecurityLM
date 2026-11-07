@@ -13,22 +13,33 @@ __pycache__/
 
 # Generated data (SQLite databases, uploads)
 runtime/
-*.db-journal
-*.db-wal
-*.db-shm
+/uploads/
 *.db
 *.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 
 # Secrets and local config
 .env
 .env.*
 !.env.example
+!.env.production.example
+.envrc
 *.pem
 *.key
-*.pyc
+*.p12
+*.pfx
 invites*.json
+
+# Logs and test coverage
+logs/
+*.log
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Editors and OS files
 .vscode/

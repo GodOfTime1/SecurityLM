@@ -56,7 +56,7 @@ class ModelSelectorTests(ChatBase):
             self.assertEqual(self.client.post('/models',headers=self.admin,json=self.entry('other',**changes) if 'id' not in changes else {**self.entry('other'),**changes}).status_code,422)
 
     def test_empty_catalog_returns_actionable_error(self):
-        with patch('app.model_selector.get_model_client') as model:
+        with patch('app.model_selector.get_advisor_client') as model:
             self.assertEqual(self.chat().status_code,503)
             model.assert_not_called()
 
@@ -83,7 +83,7 @@ class ModelSelectorTests(ChatBase):
     def test_model_can_interpret_natural_language_and_use_prior_messages(self):
         self.add()
         fake=self.advice(['small-local'],{'task':'document_qa','deployment':'local','available_memory_gb':8})
-        with patch('app.model_selector.get_model_client',return_value=fake),patch.dict(os.environ,{'MODEL_BACKEND':'ollama','SELECTOR_MODEL':'advisor-runtime'}):
+        with patch('app.model_selector.get_advisor_client',return_value=fake),patch.dict(os.environ,{'ADVISOR_BACKEND':'ollama','ADVISOR_MODEL':'advisor-runtime'}):
             r=self.chat(message='I have 8 GB and need private document Q&A',requirements={},
                         history=[{'role':'user','content':'I want a local assistant'}])
         self.assertEqual(r.status_code,200,r.text)
@@ -106,14 +106,14 @@ class ModelSelectorTests(ChatBase):
         self.add('coding',tasks=['coding'])
         self.add('disabled',enabled=False)
         fake=self.advice(['small-local'])
-        with patch('app.model_selector.get_model_client',return_value=fake):
+        with patch('app.model_selector.get_advisor_client',return_value=fake):
             self.assertEqual(self.chat().status_code,200)
         self.assertEqual([p.chunk_id for p in fake.requests[0].passages],['small-local'])
 
     def test_explicit_requirements_override_inferred_constraints(self):
         self.add()
         fake=self.advice([],{'task':'coding','deployment':'remote','available_memory_gb':100})
-        with patch('app.model_selector.get_model_client',return_value=fake):
+        with patch('app.model_selector.get_advisor_client',return_value=fake):
             out=self.chat().json()
         self.assertEqual(out['requirements']['task'],'document_qa')
         self.assertEqual(out['requirements']['deployment'],'local')
@@ -121,7 +121,7 @@ class ModelSelectorTests(ChatBase):
 
     def test_no_matching_model_does_not_call_llm(self):
         self.add(estimated_memory_gb=16)
-        with patch('app.model_selector.get_model_client') as model:
+        with patch('app.model_selector.get_advisor_client') as model:
             out=self.chat().json()
             model.assert_not_called()
         self.assertEqual(out['status'],'no_match')
@@ -132,7 +132,7 @@ class ModelSelectorTests(ChatBase):
         for fake in [self.advice(['invented']),self.advice(['small-local','small-local']),
                      FakeModel('not json'),FakeModel(json.dumps({'answer':'x','unexpected':True})),
                      FakeModel('{}',actions=[{'tool':'create_ticket','arguments':{}}])]:
-            with patch('app.model_selector.get_model_client',return_value=fake):
+            with patch('app.model_selector.get_advisor_client',return_value=fake):
                 self.assertEqual(self.chat().status_code,503)
         self.assertEqual(self.count('actions'),0)
         self.assertEqual(self.count('messages'),0)
@@ -181,7 +181,7 @@ class ModelSelectorTests(ChatBase):
         self.add()
         self.upload('private.txt',b'COMPANY-SECRET','admin')
         fake=self.advice(['small-local'])
-        with patch('app.model_selector.get_model_client',return_value=fake):
+        with patch('app.model_selector.get_advisor_client',return_value=fake):
             self.assertEqual(self.chat().status_code,200)
         self.assertNotIn('COMPANY-SECRET',str(fake.requests))
 

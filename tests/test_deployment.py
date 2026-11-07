@@ -216,7 +216,7 @@ class DeploymentTests(ChatBase):
         fake=FakeModel(json.dumps({'answer':'Candidate fits the catalog filters.',
             'requirements':{},'recommended_model_ids':['candidate'],'follow_up_questions':[]}))
         body={'message':'Help choose','requirements':{'task':'document_qa','deployment':'local','available_memory_gb':8}}
-        with patch.dict(os.environ,{'CHAT_REQUESTS_PER_MINUTE':'1'}),patch('app.model_selector.get_model_client',return_value=fake):
+        with patch.dict(os.environ,{'CHAT_REQUESTS_PER_MINUTE':'1'}),patch('app.model_selector.get_advisor_client',return_value=fake):
             self.assertEqual(self.client.post('/model-selector/chat',headers=self.employee,json=body).status_code,200)
             self.assertEqual(self.client.post('/model-selector/chat',headers=self.employee,json=body).status_code,429)
         self.assertEqual(len(fake.requests),1)

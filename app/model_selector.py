@@ -1,13 +1,13 @@
 """Stateless model-advice chat. Explicit form constraints override LLM interpretations."""
 import json
-import os
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from .auth import User, current_user, admin_user
 from .db import connection
 from .model_catalog import Task, ModelID, catalog_rows, public_model
-from .model_client import ModelRequest, ModelUnavailable, Passage, get_model_client, validate_response
+from .model_client import ModelRequest, ModelUnavailable, Passage, validate_response
+from .advisor_client import get_advisor_client, get_advisor_settings
 
 router=APIRouter(prefix='/model-selector',tags=['model selector'])
 
@@ -84,8 +84,35 @@ def missing(req):
     return questions
 
 
+@router.get('/status')
+def advisor_status(user: User = Depends(current_user)):
+    with connection() as db:
+        active_count=sum(r['enabled'] for r in catalog_rows(db))
+    try:
+        config=get_advisor_settings()
+        state='disabled' if config.backend=='disabled' else ('demo' if config.backend=='echo' else 'configured')
+        return {'state':state,'backend':config.backend,'configured':config.backend!='disabled',
+                'demo':config.backend=='echo','connection_checked':False,
+                'active_catalog_count':active_count,
+                'can_request_advice':config.backend!='disabled' and active_count>0,
+                'setup_message':'Add supported catalog entries.' if active_count==0 else
+                    ('Configure the advisor runtime when ready.' if config.backend=='disabled' else
+                     'Demo adapter only; no LLM is connected.' if config.backend=='echo' else
+                     'Runtime configured; connectivity has not been checked.')}
+    except ModelUnavailable as exc:
+        return {'state':'needs_configuration','backend':None,'configured':False,'demo':False,
+                'connection_checked':False,'active_catalog_count':active_count,'can_request_advice':False,
+                'setup_message':str(exc)}
+
+
 @router.post('/chat')
 def selector_chat(body: SelectorIn,user: User = Depends(current_user)):
+    try:
+        advisor_settings=get_advisor_settings()
+        if advisor_settings.backend=='disabled':
+            raise ModelUnavailable('Advisor is disabled; configure it when the model endpoint is ready')
+    except ModelUnavailable as exc:
+        raise HTTPException(503,str(exc)) from None
     with connection() as db:
         rows=[r for r in catalog_rows(db) if r['enabled']]
     if not rows:raise HTTPException(503,'No supported models configured; ask the organizer to populate the catalog')
@@ -104,13 +131,13 @@ def selector_chat(body: SelectorIn,user: User = Depends(current_user)):
         'Ask short follow-up questions if task or deployment is unknown, or if local memory is unknown. '
         'Recommend at most three IDs from the supplied catalog. Never invent IDs, benchmarks, memory figures, license permissions, '
         'deployment readiness, or tool support. Memory figures are estimates, not guarantees. Do not propose actions or execute anything.')
-    request=ModelRequest(model=os.environ.get('SELECTOR_MODEL',''),purpose='Model selection advisor',system_prompt=prompt,
+    request=ModelRequest(model=advisor_settings.model,purpose='Model selection advisor',system_prompt=prompt,
         history=[m.model_dump() for m in body.history],
         question=json.dumps({'message':body.message,'explicit_requirements':body.requirements.model_dump(exclude_none=True)}),
         passages=[Passage(i+1,r['id'],'supported-model-catalog',1,json.dumps(public_model(r))) for i,r in enumerate(candidates)],
-        tools=[],mode='model_selector')
+        tools=[],mode='model_selector',response_schema=Advice.model_json_schema())
     try:
-        reply=validate_response(get_model_client().generate(request))
+        reply=validate_response(get_advisor_client().generate(request))
         if reply.actions:raise ValueError('Actions not allowed')
         advice=Advice.model_validate_json(reply.text)
         interpreted=advice.requirements.model_dump()
@@ -138,7 +165,7 @@ def selector_chat(body: SelectorIn,user: User = Depends(current_user)):
     if any(not r['ready'] for r in selected):warnings.append('At least one recommendation needs runtime setup; it is not marked ready.')
     return {'status':status,'answer':answer,'requirements':requirements.model_dump(),
             'recommendations':selected,'follow_up_questions':questions,
-            'mode':'demo' if os.environ.get('MODEL_BACKEND','echo')=='echo' else 'llm','warnings':warnings}
+            'mode':'demo' if advisor_settings.backend=='echo' else 'llm','warnings':warnings}
 
 
 @router.post('/apply')
