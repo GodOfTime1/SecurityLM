@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .actions import action_view
 from .auth import User, current_user
 from .db import connection
+from .provenance import message_accessible
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -44,6 +45,11 @@ def message_view(db, row, user: User) -> dict:
     view = {"id": row["id"], "role": row["role"], "content": row["content"], "created_at": row["created_at"],
             "citations": [], "actions": [], "tool_calls": []}
     if row["role"] == "assistant":
+        conv = db.execute("SELECT assistant_id FROM conversations WHERE id=?", (row["conversation_id"],)).fetchone()
+        if not conv or not message_accessible(db, row, user, conv["assistant_id"]):
+            # Redact derived answer, proposals, and traces as well as citation text.
+            view.update(content="[Answer withheld: a source is unavailable or its access changed.]", redacted=True)
+            return view
         view["citations"] = resolve_citations(db, json.loads(row["citations"]), user)
         view["actions"] = [action_view(a) for a in db.execute(
             "SELECT * FROM actions WHERE message_id=? ORDER BY rowid", (row["id"],))]

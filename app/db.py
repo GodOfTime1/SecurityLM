@@ -109,3 +109,8 @@ def initialize():
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(chunk_id UNINDEXED, text);
         """)
+
+        # NULL means legacy/unverified provenance; never guess it from citations.
+        columns = {r["name"] for r in db.execute("PRAGMA table_info(messages)")}
+        if "source_chunks" not in columns:
+            db.execute("ALTER TABLE messages ADD COLUMN source_chunks TEXT")

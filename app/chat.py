@@ -8,9 +8,10 @@ from .auth import User, current_user
 from .conversations import message_view, owned_conversation
 from .db import connection
 from .model_client import (ModelRequest, ModelUnavailable, Passage, ToolSpec,
-                           extract_citations, get_model_client)
+                           extract_citations, get_model_client, validate_response)
 from .retrieval import search_documents
 from .tools import TOOLS
+from .provenance import MAX_SOURCES, message_accessible, message_sources, sources_accessible
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
 HISTORY_LIMIT = 10
@@ -35,19 +36,34 @@ def send_message(conversation_id: str, body: MessageIn, user: User = Depends(cur
         assistant = db.execute("SELECT * FROM assistants WHERE id=?", (conv["assistant_id"],)).fetchone()
         tool_names = [r["tool"] for r in db.execute(
             "SELECT tool FROM assistant_tools WHERE assistant_id=? ORDER BY tool", (assistant["id"],)) if r["tool"] in TOOLS]
-        history = [dict(r) for r in db.execute(
-            "SELECT role, content FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT ?",
-            (conversation_id, HISTORY_LIMIT))][::-1]
+        rows = list(db.execute(
+            "SELECT * FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT ?",
+            (conversation_id, HISTORY_LIMIT)))[::-1]
+        history, inherited_sources = [], set()
+        remaining = 24000
+        # Keep recent complete turns within a character budget.
+        for row in reversed(rows):
+            if not message_accessible(db, row, user, assistant["id"]):
+                continue
+            if len(row["content"]) > remaining:
+                break
+            remaining -= len(row["content"])
+            history.insert(0, {"role": row["role"], "content": row["content"]})
+            if row["role"] == "assistant":
+                inherited_sources.update(message_sources(row))
 
     # Permissions are applied inside search_documents, before anything reaches the model.
     chunks = search_documents(user, body.content, PASSAGE_LIMIT, assistant_id=assistant["id"])
+    sources = sorted(inherited_sources | {c["chunk_id"] for c in chunks})
+    if len(sources) > MAX_SOURCES:
+        raise HTTPException(409, "Conversation source limit reached; start a new conversation")
     passages = [Passage(i, c["chunk_id"], c["filename"], c["page_number"], c["text"]) for i, c in enumerate(chunks, 1)]
     request = ModelRequest(
         model=assistant["model"], purpose=assistant["purpose"], system_prompt=assistant["system_prompt"],
         history=history, question=body.content, passages=passages,
         tools=[ToolSpec(n, TOOLS[n].description, TOOLS[n].args_model.model_json_schema()) for n in tool_names])
     try:
-        reply = get_model_client().generate(request)
+        reply = validate_response(get_model_client().generate(request))
     except ModelUnavailable as exc:
         # Nothing is stored on failure, so the client can simply resend the same message.
         raise HTTPException(503, str(exc)) from None
@@ -55,11 +71,14 @@ def send_message(conversation_id: str, body: MessageIn, user: User = Depends(cur
     citations = extract_citations(reply.text, passages)
     user_msg_id, bot_msg_id = str(uuid4()), str(uuid4())
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         owned_conversation(db, conversation_id, user)  # still exists after a slow model call
+        if not sources_accessible(db, sources, user, assistant["id"]):
+            raise HTTPException(409, "Document access changed; retry your message")
         db.execute("INSERT INTO messages(id,conversation_id,role,content) VALUES (?,?,'user',?)",
                    (user_msg_id, conversation_id, body.content))
-        db.execute("INSERT INTO messages(id,conversation_id,role,content,citations) VALUES (?,?,'assistant',?,?)",
-                   (bot_msg_id, conversation_id, reply.text, json.dumps(citations)))
+        db.execute("INSERT INTO messages(id,conversation_id,role,content,citations,source_chunks) VALUES (?,?,'assistant',?,?,?)",
+                   (bot_msg_id, conversation_id, reply.text, json.dumps(citations), json.dumps(sources)))
         db.execute("INSERT INTO tool_calls(id,message_id,tool,arguments,status,result) VALUES (?,?,?,?,'ok',?)",
                    (str(uuid4()), bot_msg_id, "search_documents",
                     _json_small({"query": body.content[:500], "assistant_id": assistant["id"]}),

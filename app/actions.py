@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .auth import User, current_user
 from .db import connection
 from .tools import TOOLS, validate_args
+from .provenance import message_accessible
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -53,6 +54,10 @@ def _owned(db, action_id: str, user: User):
                         WHERE a.id=? AND c.user_id=?""", (action_id, user.id)).fetchone()
     if not row:
         raise HTTPException(404, "Action not found")
+    message = db.execute("SELECT * FROM messages WHERE id=?", (row["message_id"],)).fetchone()
+    assistant = db.execute("SELECT assistant_id FROM conversations WHERE id=?", (row["conversation_id"],)).fetchone()
+    if not message or not assistant or not message_accessible(db, message, user, assistant["assistant_id"]):
+        raise HTTPException(404, "Action not found")
     return row
 
 
@@ -92,24 +97,27 @@ def cancel_action(action_id: str, user: User = Depends(current_user)):
 def approve_action(action_id: str, body: ActionVersion, user: User = Depends(current_user)):
     """Approve the exact version the user saw. The draft->executing step is atomic, so a double
     click or retry cannot run the action twice, and an edit after review invalidates the approval."""
+    # Local SQLite tools only: keep ownership, provenance, current arguments,
+    # tool permission, execution, and status in one write transaction.
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         row = _owned(db, action_id, user)
-        if not db.execute("""SELECT 1 FROM conversations c JOIN assistant_tools t ON t.assistant_id=c.assistant_id
-                             WHERE c.id=? AND t.tool=?""", (row["conversation_id"], row["tool"])).fetchone():
-            raise HTTPException(403, "This tool is no longer enabled for the assistant")
-        if not db.execute("""UPDATE actions SET status='executing', updated_at=CURRENT_TIMESTAMP
-                             WHERE id=? AND status='draft' AND version=?""", (action_id, body.version)).rowcount:
+        if row["status"] != "draft" or row["version"] != body.version:
             raise HTTPException(409, "Action was changed, cancelled, or already approved. Reload it.")
-        arguments = json.loads(row["arguments"])
-        tool = row["tool"]
-    try:
-        with connection() as db:  # tool effects and the 'executed' status commit together
-            result = TOOLS[tool].execute(validate_args(tool, arguments), user, action_id, db)
-            db.execute("UPDATE actions SET status='executed', result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                       (json.dumps(result), action_id))
-    except Exception:
-        with connection() as db:
-            db.execute("UPDATE actions SET status='failed', result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                       (json.dumps({"error": "Execution failed"}), action_id))
-    with connection() as db:
+        if row["tool"] not in TOOLS or not db.execute(
+            """SELECT 1 FROM conversations c JOIN assistant_tools t ON t.assistant_id=c.assistant_id
+               WHERE c.id=? AND t.tool=?""", (row["conversation_id"], row["tool"])).fetchone():
+            raise HTTPException(403, "This tool is no longer enabled for the assistant")
+        db.execute("UPDATE actions SET status='executing' WHERE id=?", (action_id,))
+        db.execute("SAVEPOINT tool_effects")
+        try:
+            result = TOOLS[row["tool"]].execute(validate_args(row["tool"], json.loads(row["arguments"])), user, action_id, db)
+            db.execute("RELEASE tool_effects")
+            status = "executed"
+        except Exception:
+            db.execute("ROLLBACK TO tool_effects")
+            db.execute("RELEASE tool_effects")
+            status, result = "failed", {"error": "Execution failed"}
+        db.execute("UPDATE actions SET status=?, result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (status, json.dumps(result), action_id))
         return action_view(_owned(db, action_id, user))

@@ -5,11 +5,19 @@ The model only turns (instructions + history + passages + question) into text an
 Model output is never trusted: citations are mapped back to the passages we supplied, and every
 proposed action is validated and shown to the user for approval before anything runs.
 """
+import asyncio
+import ipaddress
+import math
+from urllib.parse import urlsplit
 import json
 import os
 import re
 from dataclasses import dataclass, field
 import httpx
+
+
+MAX_MODEL_BYTES = 256 * 1024
+MAX_REPLY_CHARS = 16000
 
 
 class ModelUnavailable(Exception):
@@ -89,7 +97,7 @@ def parse_actions(text: str, max_actions: int = 3) -> ModelResponse:
         if line.strip().startswith("ACTION:"):
             try:
                 proposal = json.loads(line.split("ACTION:", 1)[1])
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if len(actions) < max_actions:
                 actions.append(proposal)
@@ -118,23 +126,58 @@ class OllamaModel:
     """Talks to a local Ollama server. URL comes from server config, never from users."""
 
     def __init__(self, base_url: str, default_model: str, timeout: float):
+        try:
+            parsed = urlsplit(base_url)
+            host = parsed.hostname
+            if not host or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+                raise ValueError
+            _ = parsed.port  # validate numeric port
+            try:
+                local = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                local = host.lower() == "localhost"
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError
+            if not local and (parsed.scheme != "https" or os.environ.get("OLLAMA_ALLOW_REMOTE") != "1"):
+                raise ValueError
+            if not math.isfinite(timeout) or not 1 <= timeout <= 120:
+                raise ValueError
+        except ValueError:
+            raise ModelUnavailable("Invalid model server configuration") from None
         self.base_url, self.default_model, self.timeout = base_url.rstrip("/"), default_model, timeout
+
+    async def _request(self, payload):
+        # Disable environment proxies: document context must only go to the
+        # explicitly configured model host. Never follow redirects.
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=self.timeout) as client:
+            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload,
+                                     headers={"Accept-Encoding": "identity"}) as response:
+                response.raise_for_status()
+                if response.status_code != 200 or response.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise ValueError
+                data = bytearray()
+                async for part in response.aiter_raw():
+                    if len(data) + len(part) > MAX_MODEL_BYTES:
+                        raise ValueError
+                    data.extend(part)
+                text = json.loads(data)["message"]["content"]
+                if not isinstance(text, str) or len(text) > MAX_REPLY_CHARS:
+                    raise ValueError
+                return parse_actions(text)
 
     def generate(self, req: ModelRequest) -> ModelResponse:
         model = req.model or self.default_model
         if not model:
             raise ModelUnavailable("No model is selected for this assistant")
         payload = {"model": model, "messages": build_messages(req), "stream": False,
-                   "options": {"temperature": 0.2}}
+                   "options": {"temperature": 0.2, "num_predict": 1024, "num_ctx": 8192}}
+        async def bounded_request():
+            # HTTPX's read timeout is per chunk. This also bounds total time.
+            return await asyncio.wait_for(self._request(payload), timeout=self.timeout)
         try:
-            r = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout)
-            r.raise_for_status()
-            text = r.json()["message"]["content"]
-            if not isinstance(text, str):
-                raise ValueError
-        except (httpx.HTTPError, KeyError, ValueError, TypeError):
-            raise ModelUnavailable("The model is unavailable or timed out. Try again.") from None
-        return parse_actions(text)
+            return validate_response(asyncio.run(bounded_request()))
+        except (httpx.HTTPError, KeyError, ValueError, TypeError, RecursionError, TimeoutError):
+            raise ModelUnavailable("The model is unavailable or returned an invalid response. Try again.") from None
 
 
 def get_model_client():
@@ -142,9 +185,12 @@ def get_model_client():
     if backend == "echo":
         return EchoModel()
     if backend == "ollama":
+        try:
+            timeout = float(os.environ.get("MODEL_TIMEOUT_SECONDS", "60"))
+        except ValueError:
+            raise ModelUnavailable("Invalid model server configuration") from None
         return OllamaModel(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
-                           os.environ.get("OLLAMA_DEFAULT_MODEL", ""),
-                           float(os.environ.get("MODEL_TIMEOUT_SECONDS", "60")))
+                           os.environ.get("OLLAMA_DEFAULT_MODEL", ""), timeout)
     raise ModelUnavailable("Model backend is not configured")
 
 
@@ -157,3 +203,18 @@ def extract_citations(text: str, passages: list[Passage]) -> list[dict]:
         if n in valid and n not in seen:
             seen.append(n)
     return [{"n": n, "chunk_id": valid[n].chunk_id} for n in seen]
+
+
+def validate_response(reply: ModelResponse) -> ModelResponse:
+    """Check every adapter, including teammate-provided/in-process adapters."""
+    if (not isinstance(reply, ModelResponse) or not isinstance(reply.text, str)
+            or len(reply.text) > MAX_REPLY_CHARS or not isinstance(reply.actions, list)
+            or len(reply.actions) > 3):
+        raise ModelUnavailable("The model returned an invalid response")
+    try:
+        encoded = json.dumps(reply.actions, allow_nan=False)
+        if len(encoded) > 32000:
+            raise ValueError
+    except (ValueError, TypeError, RecursionError):
+        raise ModelUnavailable("The model returned invalid actions") from None
+    return reply
