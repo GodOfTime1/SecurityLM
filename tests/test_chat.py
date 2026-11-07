@@ -1,4 +1,6 @@
 import os
+import json
+import httpx
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,7 @@ class ChatBase(unittest.TestCase):
             "EMPLOYEE_API_KEY": "employee-test-key-" + "b" * 24,
             "MODEL_BACKEND": "echo"})
         self.env.start()
+        os.environ.pop("USER_API_KEYS", None)  # isolate from host credentials
         self.admin = {"X-API-Key": os.environ["ADMIN_API_KEY"]}
         self.employee = {"X-API-Key": os.environ["EMPLOYEE_API_KEY"]}
         self.client = TestClient(app)
@@ -130,17 +133,23 @@ class ChatTests(ChatBase):
             msg = self.say(conv, "VPN").json()["assistant_message"]
         self.assertEqual([c["n"] for c in msg["citations"]], [1])
 
-    def test_citation_text_withheld_when_source_deleted_or_hidden(self):
-        doc = self.upload("v.txt", b"VPN secret-ish text")
-        conv = self.conversation(self.assistant([doc["id"]]))
-        self.say(conv, "VPN")
-        with connection() as db:
-            db.execute("UPDATE documents SET visibility='admin' WHERE id=?", (doc["id"],))
-        got = self.client.get(f"/conversations/{conv['id']}", headers=self.employee).json()
-        cite = got["messages"][1]["citations"][0]
-        self.assertFalse(cite["available"])
-        self.assertNotIn("text", cite)
-        self.assertNotIn("filename", cite)
+    def test_answer_and_details_withheld_when_source_deleted_or_hidden(self):
+        for change in ("hidden", "deleted"):
+            with self.subTest(change=change):
+                doc = self.upload("v.txt", b"VPN secret-ish text")
+                conv = self.conversation(self.assistant([doc["id"]]))
+                self.assertEqual(self.say(conv, "VPN").status_code, 201)
+                if change == "hidden":
+                    with connection() as db:
+                        db.execute("UPDATE documents SET visibility='admin' WHERE id=?", (doc["id"],))
+                else:
+                    self.assertEqual(self.client.delete(f"/documents/{doc['id']}", headers=self.admin).status_code, 204)
+                response = self.client.get(f"/conversations/{conv['id']}", headers=self.employee)
+                self.assertEqual(response.status_code, 200)
+                msg = response.json()["messages"][1]
+                self.assertTrue(msg["redacted"])
+                self.assertNotIn("secret-ish", response.text)
+                self.assertEqual((msg["citations"], msg["actions"], msg["tool_calls"]), ([], [], []))
 
     def test_model_unavailable_returns_503_and_stores_nothing(self):
         conv = self.conversation(self.assistant())
@@ -222,10 +231,15 @@ class ActionTests(ChatBase):
                {"tool": "create_ticket", "arguments": {"title": "t", "description": "d", "severity": "critical"}},
                {"tool": "create_ticket", "arguments": {"title": "t", "description": "d", "admin": True}},
                "not a dict"]
-        with patch("app.chat.get_model_client", return_value=FakeModel("hi", bad)):
-            msg = self.say(self.conversation(a), "hello").json()["assistant_message"]
-        self.assertEqual(msg["actions"], [])
-        self.assertEqual([t["status"] for t in msg["tool_calls"]], ["ok", "rejected", "rejected", "rejected"])
+        # Keep each reply inside the three-proposal adapter limit, then verify
+        # each malformed proposal is rejected by the backend tool validator.
+        for proposals in (bad[:3], bad[3:]):
+            with self.subTest(proposals=proposals), patch("app.chat.get_model_client", return_value=FakeModel("hi", proposals)):
+                response = self.say(self.conversation(a), "hello")
+                self.assertEqual(response.status_code, 201, response.text)
+                msg = response.json()["assistant_message"]
+                self.assertEqual(msg["actions"], [])
+                self.assertEqual([t["status"] for t in msg["tool_calls"]], ["ok"] + ["rejected"] * len(proposals))
         self.assertEqual(self.count("actions"), 0)
 
     def test_tool_not_enabled_for_assistant_is_rejected(self):
@@ -254,23 +268,38 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(r.text, "Answer [1]")
         self.assertEqual(len(r.actions), 1)
 
+    @staticmethod
+    def transport_patch(handler):
+        original = httpx.AsyncClient
+        return patch("app.model_client.httpx.AsyncClient",
+                     side_effect=lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
+
     def test_ollama_errors_become_model_unavailable(self):
-        import httpx
-        req = ModelRequest("m", "", "", [], "q", [], [])
-        with patch("app.model_client.httpx.post", side_effect=httpx.ConnectError("refused")):
+        requests = []
+        def refused(req):
+            requests.append(req)
+            raise httpx.ConnectError("refused", request=req)
+        with self.transport_patch(refused):
             with self.assertRaises(ModelUnavailable):
-                OllamaModel("http://x", "", 1).generate(req)
-        with self.assertRaises(ModelUnavailable):  # no model selected anywhere
-            OllamaModel("http://x", "", 1).generate(ModelRequest("", "", "", [], "q", [], []))
+                OllamaModel("http://127.0.0.1:11434", "", 1).generate(ModelRequest("m", "", "", [], "q", [], []))
+            self.assertEqual(len(requests), 1)  # must actually reach the transport
+            with self.assertRaises(ModelUnavailable):
+                OllamaModel("http://127.0.0.1:11434", "", 1).generate(ModelRequest("", "", "", [], "q", [], []))
+            self.assertEqual(len(requests), 1)  # missing model fails before transport
 
     def test_ollama_success_parses_text_and_actions(self):
-        class R:
-            def raise_for_status(self): pass
-            def json(self): return {"message": {"content": "Hi [1]\nACTION: {\"tool\": \"create_ticket\", \"arguments\": {}}"}}
-        with patch("app.model_client.httpx.post", return_value=R()) as post:
-            out = OllamaModel("http://x", "", 1).generate(ModelRequest("llama", "", "", [], "q", [], []))
+        requests = []
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield json.dumps({"message": {"content": 'Hi [1]\nACTION: {"tool": "create_ticket", "arguments": {}}'}}).encode()
+        def respond(req):
+            requests.append(req)
+            return httpx.Response(200, stream=Stream())
+        with self.transport_patch(respond):
+            out = OllamaModel("http://127.0.0.1:11434", "", 1).generate(ModelRequest("llama", "", "", [], "q", [], []))
         self.assertEqual((out.text, len(out.actions)), ("Hi [1]", 1))
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "llama")
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(json.loads(requests[0].content)["model"], "llama")
 
 
 if __name__ == "__main__":

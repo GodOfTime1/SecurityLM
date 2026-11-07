@@ -50,8 +50,7 @@ def _extract_pages(filename: str, data: bytes) -> list[str]:
     return pages
 
 
-def store_document(filename: str, visibility: str, pages: list[str]):
-    document_id = str(uuid4())
+def _chunks(document_id, pages):
     chunks = []
     for number, page in enumerate(pages, start=1):
         page = page.strip()
@@ -62,17 +61,27 @@ def store_document(filename: str, visibility: str, pages: list[str]):
             if end == len(page):
                 break
             start = end - OVERLAP
+    return chunks
+
+
+def store_document(filename: str, visibility: str, pages: list[str]):
+    document_id = str(uuid4())
+    chunks = _chunks(document_id, pages)
     with connection() as db:
         db.execute("INSERT INTO documents(id,filename,visibility,page_count) VALUES (?,?,?,?)",
                    (document_id, filename, visibility, len(pages)))
         db.executemany("INSERT INTO chunks(id,document_id,page_number,text) VALUES (?,?,?,?)", chunks)
         db.executemany("INSERT INTO chunk_search(chunk_id,text) VALUES (?,?)", [(c[0], c[3]) for c in chunks])
+    return _document_result(document_id, filename, visibility, pages, chunks, 1)
+
+
+def _document_result(document_id, filename, visibility, pages, chunks, version):
     empty = [i for i, page in enumerate(pages, 1) if not page.strip()]
     warnings = []
     if empty:
         warnings.append(f"{len(empty)} of {len(pages)} pages had no extractable text "
                         "(possibly scanned images). Those pages are not searchable until OCR is added.")
-    return {"id": document_id, "filename": filename, "visibility": visibility,
+    return {"id": document_id, "filename": filename, "visibility": visibility, "version": version,
             "page_count": len(pages), "chunk_count": len(chunks),
             "empty_pages": empty, "warnings": warnings}
 
@@ -117,3 +126,21 @@ def extract_pages(filename: str, data: bytes) -> list[str]:
         return output["pages"]
     finally:
         _pdf_slots.release()
+
+
+def replace_document(document_id, expected_version, filename, pages):
+    chunks = _chunks(document_id, pages)
+    with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        document = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+        if not document:
+            raise HTTPException(404, "Document not found")
+        if document["version"] != expected_version:
+            raise HTTPException(409, "Document changed; reload its version before replacing")
+        db.execute("DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
+        db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+        db.execute("UPDATE documents SET filename=?,page_count=?,version=version+1 WHERE id=?",
+                   (filename, len(pages), document_id))
+        db.executemany("INSERT INTO chunks(id,document_id,page_number,text) VALUES (?,?,?,?)", chunks)
+        db.executemany("INSERT INTO chunk_search(chunk_id,text) VALUES (?,?)", [(c[0], c[3]) for c in chunks])
+        return _document_result(document_id, filename, document["visibility"], pages, chunks, expected_version + 1)

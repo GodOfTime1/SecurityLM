@@ -37,7 +37,9 @@ class SecurityMiddleware:
 
         headers = scope.get('headers', [])
         path = scope['path']
-        upload = path.rstrip('/') == '/documents' and scope['method'] == 'POST'
+        parts = path.rstrip('/').split('/')
+        upload = ((path.rstrip('/') == '/documents' and scope['method'] == 'POST')
+                  or (len(parts) == 3 and parts[1] == 'documents' and scope['method'] == 'PUT'))
         if path not in PUBLIC_PATHS:
             keys = [v for k, v in headers if k.lower() == b'x-api-key']
             if len(keys) != 1:

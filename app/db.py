@@ -110,7 +110,31 @@ def initialize():
         CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(chunk_id UNINDEXED, text);
         """)
 
+        db.execute("BEGIN IMMEDIATE")
         # NULL means legacy/unverified provenance; never guess it from citations.
         columns = {r["name"] for r in db.execute("PRAGMA table_info(messages)")}
         if "source_chunks" not in columns:
             db.execute("ALTER TABLE messages ADD COLUMN source_chunks TEXT")
+        for table, column, definition in (
+            ('documents', 'version', 'INTEGER NOT NULL DEFAULT 1'),
+            ('conversations', 'revision', 'INTEGER NOT NULL DEFAULT 0'),
+        ):
+            columns = {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}
+            if column not in columns:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS chat_requests (
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            request_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','completed','failed')),
+            token TEXT,
+            lease_until REAL NOT NULL DEFAULT 0,
+            user_message_id TEXT,
+            assistant_message_id TEXT,
+            revision INTEGER,
+            PRIMARY KEY(conversation_id,request_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_one_pending_turn
+            ON chat_requests(conversation_id) WHERE status='pending';
+        """)

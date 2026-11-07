@@ -15,6 +15,7 @@ class AssistantTests(unittest.TestCase):
             "ADMIN_API_KEY": "admin-test-key-" + "a" * 24,
             "EMPLOYEE_API_KEY": "employee-test-key-" + "b" * 24})
         self.env.start()
+        os.environ.pop("USER_API_KEYS", None)  # isolate from host credentials
         self.admin = {"X-API-Key": os.environ["ADMIN_API_KEY"]}
         self.employee = {"X-API-Key": os.environ["EMPLOYEE_API_KEY"]}
         self.client = TestClient(app)

@@ -1,16 +1,17 @@
 """POST /conversations/{id}/messages: retrieve permitted passages, call the model, store the turn."""
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from .actions import ToolRejected, create_draft
 from .auth import User, current_user
-from .conversations import message_view, owned_conversation
+from .conversations import owned_conversation
 from .db import connection
 from .model_client import (ModelRequest, ModelUnavailable, Passage, ToolSpec,
                            extract_citations, get_model_client, validate_response)
 from .retrieval import search_documents
 from .tools import TOOLS
+from .turns import reserve_turn, check_reservation, complete_turn, release_turn
 from .provenance import MAX_SOURCES, message_accessible, message_sources, sources_accessible
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
@@ -22,6 +23,8 @@ MAX_PROPOSALS = 3
 class MessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     content: str = Field(min_length=1, max_length=4000)
+    request_id: UUID = Field(default_factory=uuid4)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 def _json_small(value, limit: int = 2000) -> str:
@@ -31,6 +34,16 @@ def _json_small(value, limit: int = 2000) -> str:
 
 @router.post("/{conversation_id}/messages", status_code=201)
 def send_message(conversation_id: str, body: MessageIn, user: User = Depends(current_user)):
+    reservation, replay = reserve_turn(conversation_id, str(body.request_id), body.content, body.expected_revision, user)
+    if replay is not None:
+        return replay
+    try:
+        return _generate_turn(conversation_id, body, user, reservation)
+    finally:
+        release_turn(reservation)
+
+
+def _generate_turn(conversation_id, body, user, reservation):
     with connection() as db:
         conv = owned_conversation(db, conversation_id, user)
         assistant = db.execute("SELECT * FROM assistants WHERE id=?", (conv["assistant_id"],)).fetchone()
@@ -65,14 +78,14 @@ def send_message(conversation_id: str, body: MessageIn, user: User = Depends(cur
     try:
         reply = validate_response(get_model_client().generate(request))
     except ModelUnavailable as exc:
-        # Nothing is stored on failure, so the client can simply resend the same message.
+        # No messages are stored on failure; the request ID remains bound to its payload.
         raise HTTPException(503, str(exc)) from None
 
     citations = extract_citations(reply.text, passages)
     user_msg_id, bot_msg_id = str(uuid4()), str(uuid4())
     with connection() as db:
         db.execute("BEGIN IMMEDIATE")
-        owned_conversation(db, conversation_id, user)  # still exists after a slow model call
+        check_reservation(db, reservation, user)
         if not sources_accessible(db, sources, user, assistant["id"]):
             raise HTTPException(409, "Document access changed; retry your message")
         db.execute("INSERT INTO messages(id,conversation_id,role,content) VALUES (?,?,'user',?)",
@@ -97,7 +110,4 @@ def send_message(conversation_id: str, body: MessageIn, user: User = Depends(cur
                         _json_small(args if isinstance(args, dict) else {}), outcome[0], _json_small(outcome[1])))
         if not conv["title"]:
             db.execute("UPDATE conversations SET title=? WHERE id=?", (body.content.strip()[:60], conversation_id))
-        db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
-        rows = {r["id"]: r for r in db.execute("SELECT * FROM messages WHERE id IN (?,?)", (user_msg_id, bot_msg_id))}
-        return {"user_message": message_view(db, rows[user_msg_id], user),
-                "assistant_message": message_view(db, rows[bot_msg_id], user)}
+        return complete_turn(db, reservation, user_msg_id, bot_msg_id, user)

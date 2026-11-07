@@ -25,7 +25,7 @@ def owned_conversation(db, conversation_id: str, user: User):
 
 
 def conversation_view(row) -> dict:
-    return {k: row[k] for k in ("id", "assistant_id", "title", "created_at", "updated_at")}
+    return {k: row[k] for k in ("id", "assistant_id", "title", "created_at", "updated_at", "revision")}
 
 
 def resolve_citations(db, citations: list[dict], user: User) -> list[dict]:
