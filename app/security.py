@@ -5,6 +5,7 @@ from threading import BoundedSemaphore
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
 from .auth import authenticate_key
+from .limits import rate_limit
 
 MAX_REQUEST_BYTES = 11 * 1024 * 1024  # file plus multipart envelope
 MAX_JSON_BYTES = 64 * 1024
@@ -48,6 +49,12 @@ class SecurityMiddleware:
                 user = authenticate_key(keys[0].decode('latin-1'))
             except HTTPException as exc:
                 return await reject(exc.status_code, exc.detail)
+            try:
+                chat = scope['method'] == 'POST' and len(parts) == 4 and parts[1] == 'conversations' and parts[3] == 'messages'
+                await asyncio.to_thread(rate_limit, user.id, chat)
+            except HTTPException as exc:
+                return await JSONResponse({'detail': exc.detail}, status_code=exc.status_code,
+                    headers=exc.headers)(scope, receive, secure_send)
             if upload and user.role != 'admin':
                 return await reject(403, 'Administrator access required')
 

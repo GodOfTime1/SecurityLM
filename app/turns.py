@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from .conversations import message_view, owned_conversation
 from .db import connection
+from .limits import cap
 
 # Longer than the built-in model client's maximum 120-second total timeout.
 # Custom adapters must also return before this lease expires.
@@ -47,6 +48,12 @@ def reserve_turn(conversation_id, request_id, content, expected_revision, user):
                 raise HTTPException(409, 'Request ID was already used for a different payload')
             if previous['status'] == 'completed':
                 return None, turn_response(db, previous, user, True)
+        messages = db.execute('SELECT COUNT(*) FROM messages WHERE conversation_id=?', (conversation_id,)).fetchone()[0]
+        # A turn needs room for both a user and an assistant message.
+        cap(messages + 1, 'MAX_MESSAGES_PER_CONVERSATION',200)
+        if not previous:
+            cap(db.execute('SELECT COUNT(*) FROM chat_requests WHERE conversation_id=?', (conversation_id,)).fetchone()[0],
+                'MAX_REQUEST_IDS_PER_CONVERSATION',400)
         # A crashed/expired attempt must not block the conversation forever.
         db.execute("UPDATE chat_requests SET status='failed',token=NULL WHERE conversation_id=? "
                    "AND status='pending' AND lease_until<=?", (conversation_id, now))

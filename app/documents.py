@@ -10,6 +10,7 @@ from uuid import uuid4
 from pypdf import PdfReader
 from fastapi import HTTPException
 from .db import connection
+from .limits import document_quota
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PAGES = 100
@@ -68,6 +69,8 @@ def store_document(filename: str, visibility: str, pages: list[str]):
     document_id = str(uuid4())
     chunks = _chunks(document_id, pages)
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        document_quota(db, chunks)
         db.execute("INSERT INTO documents(id,filename,visibility,page_count) VALUES (?,?,?,?)",
                    (document_id, filename, visibility, len(pages)))
         db.executemany("INSERT INTO chunks(id,document_id,page_number,text) VALUES (?,?,?,?)", chunks)
@@ -137,6 +140,7 @@ def replace_document(document_id, expected_version, filename, pages):
             raise HTTPException(404, "Document not found")
         if document["version"] != expected_version:
             raise HTTPException(409, "Document changed; reload its version before replacing")
+        document_quota(db, chunks, replacing=document_id)
         db.execute("DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
         db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
         db.execute("UPDATE documents SET filename=?,page_count=?,version=version+1 WHERE id=?",

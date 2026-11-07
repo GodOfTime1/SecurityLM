@@ -27,6 +27,8 @@ runtime/
 !.env.example
 *.pem
 *.key
+*.pyc
+invites*.json
 
 # Editors and OS files
 .vscode/

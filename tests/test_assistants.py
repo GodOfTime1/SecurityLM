@@ -12,6 +12,7 @@ class AssistantTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {
             "DATABASE_PATH": str(Path(self.temp.name) / "test.db"),
+            "APP_ENV": "development",
             "ADMIN_API_KEY": "admin-test-key-" + "a" * 24,
             "EMPLOYEE_API_KEY": "employee-test-key-" + "b" * 24})
         self.env.start()

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from .auth import User, admin_user, current_user
 from .db import connection
+from .limits import cap
 
 
 class StrictModel(BaseModel):
@@ -20,6 +21,7 @@ class CreateTicketArgs(StrictModel):
 
 def _create_ticket(args: dict, user: User, action_id: str, db) -> dict:
     # tickets.action_id is UNIQUE, so one approved action can never create two tickets.
+    cap(db.execute("SELECT COUNT(*) FROM tickets").fetchone()[0], "MAX_TICKETS",1000)
     ticket_id = str(uuid4())
     db.execute("INSERT INTO tickets(id,action_id,title,description,severity,created_by) VALUES (?,?,?,?,?,?)",
                (ticket_id, action_id, args["title"], args["description"], args["severity"], user.id))

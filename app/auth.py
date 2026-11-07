@@ -18,6 +18,8 @@ class User:
 
 def _configured_users():
     raw = os.environ.get("USER_API_KEYS")
+    if os.environ.get("APP_ENV") == "production" and raw is None:
+        raise RuntimeError("Production requires individual USER_API_KEYS; shared demo credentials are disabled")
     if raw is None:
         entries = [{"key": os.environ.get(name, ""), "id": f"demo-{role}", "role": role}
                    for role, name in (("admin", "ADMIN_API_KEY"), ("employee", "EMPLOYEE_API_KEY"))]
@@ -38,6 +40,8 @@ def _configured_users():
                 or not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", identity)
                 or identity in identities or not isinstance(role, str) or role not in {"admin", "employee"}):
             raise RuntimeError("Configure distinct identities and strong, distinct ASCII API keys")
+        if os.environ.get("APP_ENV") == "production" and (len(key) < 43 or identity.startswith('demo-')):
+            raise RuntimeError("Use individual production identities with generated keys of at least 43 characters")
         keys.add(key)
         identities.add(identity)
         users.append((key, User(identity, role)))

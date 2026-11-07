@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from .auth import User, admin_user, current_user
 from .db import connection
+from .limits import cap
 from .retrieval import search_documents
 
 router = APIRouter(prefix="/assistants", tags=["assistants"])
@@ -60,6 +61,8 @@ def _load(db, assistant_id: str, user: User):
 def create_assistant(body: AssistantIn, user: User = Depends(admin_user)):
     assistant_id = str(uuid4())
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        cap(db.execute("SELECT COUNT(*) FROM assistants").fetchone()[0], 'MAX_ASSISTANTS',30)
         db.execute("INSERT INTO assistants(id,name,purpose,model,system_prompt,created_by) VALUES (?,?,?,?,?,?)",
                    (assistant_id, body.name, body.purpose, body.model, body.system_prompt, user.id))
         return _load(db, assistant_id, user)

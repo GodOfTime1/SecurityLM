@@ -138,3 +138,7 @@ def initialize():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_one_pending_turn
             ON chat_requests(conversation_id) WHERE status='pending';
         """)
+
+        db.execute("""CREATE TABLE IF NOT EXISTS request_rates (
+            user_id TEXT NOT NULL, kind TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL,
+            PRIMARY KEY(user_id,kind,window))""")

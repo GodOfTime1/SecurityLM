@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .actions import action_view
 from .auth import User, current_user
 from .db import connection
+from .limits import cap
 from .provenance import message_accessible
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -63,6 +64,9 @@ def message_view(db, row, user: User) -> dict:
 def create_conversation(body: ConversationIn, user: User = Depends(current_user)):
     conversation_id = str(uuid4())
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        cap(db.execute("SELECT COUNT(*) FROM conversations WHERE user_id=?", (user.id,)).fetchone()[0],
+            'MAX_CONVERSATIONS_PER_USER',20)
         if not db.execute("SELECT 1 FROM assistants WHERE id=?", (body.assistant_id,)).fetchone():
             raise HTTPException(404, "Assistant not found")
         db.execute("INSERT INTO conversations(id,user_id,assistant_id,title) VALUES (?,?,?,?)",

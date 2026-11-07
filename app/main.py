@@ -4,6 +4,7 @@ from typing import Literal
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from .security import SecurityMiddleware
+from .deployment import DeploymentMiddleware, validate_deployment
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, ConfigDict
 from .auth import User, admin_user, current_user, validate_config
@@ -20,12 +21,14 @@ from .retrieval import search_documents
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_config()
+    validate_deployment()
     initialize()
     yield
 
 
 app = FastAPI(title="Private Agent — Document Backend", lifespan=lifespan)
 app.add_middleware(SecurityMiddleware)
+app.add_middleware(DeploymentMiddleware)
 app.include_router(assistants_router)
 app.include_router(conversations_router)
 app.include_router(chat_router)
