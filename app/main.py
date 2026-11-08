@@ -17,6 +17,7 @@ from .tools import router as tools_router
 from .model_catalog import router as catalog_router
 from .model_selector import router as selector_router
 from .pii import router as privacy_router
+from .presets import router as presets_router
 from .documents import MAX_BYTES, delete_document, extract_pages, store_document, replace_document
 from .retrieval import search_documents
 
@@ -40,6 +41,7 @@ app.include_router(tools_router)
 app.include_router(catalog_router)
 app.include_router(selector_router)
 app.include_router(privacy_router)
+app.include_router(presets_router)
 
 
 @app.exception_handler(RequestValidationError)

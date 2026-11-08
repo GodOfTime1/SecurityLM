@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -260,8 +261,9 @@ except HTTPException as e:print(e.status_code)
         with connection() as db:
             db.execute('DROP INDEX idx_one_pending_turn')
             db.execute('DROP TABLE chat_requests')
-            db.execute('ALTER TABLE documents DROP COLUMN version')
-            db.execute('ALTER TABLE conversations DROP COLUMN revision')
+            if sqlite3.sqlite_version_info >= (3, 35, 0):
+                db.execute('ALTER TABLE documents DROP COLUMN version')
+                db.execute('ALTER TABLE conversations DROP COLUMN revision')
         initialize()
         initialize()
         self.assertEqual(self.client.get('/documents', headers=self.admin).json()['documents'][0]['version'], 1)
