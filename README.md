@@ -25,7 +25,7 @@ This project aims to target the privacy element of AI models where, when asking 
 ## Technology Stack
 - Python: used as the primary coding language
 - FastAPI: used to connect back-end and front end; manages requests, permissions, and model calls
-- Qwen 2.5-1.5B-instruct: used as a demo SLM combined with Empire AI remote GPU as a locally hosted server
+- Qwen 2.5-1.5B-instruct: used as a demo SLM combined with Empire AI remote GPU as a 'locally hosted server' representation
 - Streamlit: provides a browser-based interface for creating assistants, loading documents, and managing SLM parameters
   
 ## Tests
