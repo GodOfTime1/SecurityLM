@@ -9,7 +9,7 @@ from .model_client import EchoModel, ModelRequest, ModelResponse, ModelUnavailab
 
 class AdvisorAdapter(Protocol):
     """A future Empire/vLLM adapter implements this one method."""
-    def generate(self, request: ModelRequest) -> ModelResponse: ...
+    def generate(self, request: ModelRequest, /) -> ModelResponse: ...
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,15 @@ def get_advisor_client() -> AdvisorClient:
     config = get_advisor_settings()
     if config.backend == 'disabled':
         raise ModelUnavailable('Advisor is disabled until a runtime is configured')
-    adapter = (EchoModel() if config.backend == 'echo' else
-               OllamaModel(config.base_url,config.model,config.timeout,allow_remote=config.allow_remote, data_policy=config.data_policy))
+    adapter: AdvisorAdapter
+    if config.backend == 'echo':
+        adapter = EchoModel()
+    else:
+        adapter = OllamaModel(
+            config.base_url,
+            config.model,
+            config.timeout,
+            allow_remote=config.allow_remote,
+            data_policy=config.data_policy,
+        )
     return AdvisorClient(adapter, config)

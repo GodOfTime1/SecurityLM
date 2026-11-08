@@ -1,15 +1,20 @@
 """Fail closed when stored model content depends on a withdrawn source."""
 import json
+import sqlite3
 
 MAX_SOURCES = 256
 
 
-def message_sources(row):
+def message_sources(row: sqlite3.Row) -> list[str] | None:
     try:
-        sources = json.loads(row['source_chunks'])
-        if (not isinstance(sources, list) or len(sources) > MAX_SOURCES
-                or any(not isinstance(s, str) or not 1 <= len(s) <= 100 for s in sources)):
+        raw: object = json.loads(row['source_chunks'])
+        if not isinstance(raw, list) or len(raw) > MAX_SOURCES:
             return None
+        sources: list[str] = []
+        for source in raw:
+            if not isinstance(source, str) or not 1 <= len(source) <= 100:
+                return None
+            sources.append(source)
         return sources
     except (ValueError, TypeError, IndexError, KeyError):
         return None

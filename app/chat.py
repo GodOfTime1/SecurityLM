@@ -53,18 +53,24 @@ def _generate_turn(conversation_id, body, user, reservation):
         rows = list(db.execute(
             "SELECT * FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT ?",
             (conversation_id, HISTORY_LIMIT)))[::-1]
-        history, inherited_sources = [], set()
+        history: list[dict[str, str]] = []
+        inherited_sources: set[str] = set()
         remaining = 24000
         # Keep recent complete turns within a character budget.
         for row in reversed(rows):
             if not message_accessible(db, row, user, assistant["id"], require_current=True):
+                continue
+            row_sources: list[str] | None = message_sources(row) if row["role"] == "assistant" else []
+            if row_sources is None:
+                # Unknown/corrupt provenance stays excluded, rather than being
+                # silently treated as an answer with no source dependencies.
                 continue
             if len(row["content"]) > remaining:
                 break
             remaining -= len(row["content"])
             history.insert(0, {"role": row["role"], "content": row["content"]})
             if row["role"] == "assistant":
-                inherited_sources.update(message_sources(row))
+                inherited_sources.update(row_sources)
 
     # Permissions are applied inside search_documents, before anything reaches the model.
     chunks = search_documents(user, body.content, PASSAGE_LIMIT, assistant_id=assistant["id"])
