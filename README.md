@@ -16,7 +16,7 @@ This project aims to target the privacy element of AI models where, when asking 
   
 ### Help & advisor
 - Provides pre-generated responses to FAQs
-- Allows for agentic responses for other relevant questions
+- Offers model selection advice and other answers to relevant questions
   
 ### Assistant Setup
 - Adjust premade assistant profiles
