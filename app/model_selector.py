@@ -8,6 +8,7 @@ from .db import connection
 from .model_catalog import Task, ModelID, catalog_rows, public_model
 from .model_client import ModelRequest, ModelUnavailable, Passage, validate_response
 from .advisor_client import get_advisor_client, get_advisor_settings
+from .inference import generate_reply
 
 router=APIRouter(prefix='/model-selector',tags=['model selector'])
 
@@ -137,7 +138,7 @@ def selector_chat(body: SelectorIn,user: User = Depends(current_user)):
         passages=[Passage(i+1,r['id'],'supported-model-catalog',1,json.dumps(public_model(r))) for i,r in enumerate(candidates)],
         tools=[],mode='model_selector',response_schema=Advice.model_json_schema())
     try:
-        reply=validate_response(get_advisor_client().generate(request))
+        reply=validate_response(generate_reply(get_advisor_client(), request))
         if reply.actions:raise ValueError('Actions not allowed')
         advice=Advice.model_validate_json(reply.text)
         interpreted=advice.requirements.model_dump()

@@ -56,7 +56,7 @@ def _owned(db, action_id: str, user: User):
         raise HTTPException(404, "Action not found")
     message = db.execute("SELECT * FROM messages WHERE id=?", (row["message_id"],)).fetchone()
     assistant = db.execute("SELECT assistant_id FROM conversations WHERE id=?", (row["conversation_id"],)).fetchone()
-    if not message or not assistant or not message_accessible(db, message, user, assistant["assistant_id"]):
+    if not message or not assistant or not message_accessible(db, message, user, assistant["assistant_id"], require_current=True):
         raise HTTPException(404, "Action not found")
     return row
 

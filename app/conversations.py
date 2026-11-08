@@ -34,10 +34,14 @@ def resolve_citations(db, citations: list[dict], user: User) -> list[dict]:
     visible to this user, the citation stays but its text and filename are withheld."""
     out = []
     for c in citations:
-        row = db.execute("""SELECT c.id AS chunk_id, d.id AS document_id, d.filename, c.page_number, c.text
-            FROM chunks c JOIN documents d ON d.id=c.document_id
-            WHERE c.id=? AND (d.visibility='employee' OR ?='admin')""", (c["chunk_id"], user.role)).fetchone()
-        out.append({"n": c["n"], **dict(row), "available": True} if row
+        row = db.execute("""SELECT c.id AS chunk_id, d.id AS document_id, c.filename, c.page_number, c.text
+            , c.document_version, (c.document_version=d.version) AS is_current
+            FROM (SELECT id,document_id,filename,document_version,page_number,text,visibility AS source_visibility FROM archived_chunks
+                UNION ALL SELECT c.id,c.document_id,d.filename,d.version AS document_version,c.page_number,c.text,d.visibility AS source_visibility
+                FROM chunks c JOIN documents d ON d.id=c.document_id) c JOIN documents d ON d.id=c.document_id
+            WHERE c.id=? AND (d.visibility='employee' OR ?='admin')
+                AND (c.source_visibility='employee' OR ?='admin')""", (c["chunk_id"], user.role, user.role)).fetchone()
+        out.append({"n": c["n"], **dict(row), "is_current":bool(row["is_current"]), "available": True} if row
                    else {"n": c["n"], "chunk_id": c["chunk_id"], "available": False})
     return out
 
@@ -52,6 +56,10 @@ def message_view(db, row, user: User) -> dict:
             view.update(content="[Answer withheld: a source is unavailable or its access changed.]", redacted=True)
             return view
         view["citations"] = resolve_citations(db, json.loads(row["citations"]), user)
+        view["stale_sources"] = not message_accessible(db, row, user, conv["assistant_id"], require_current=True)
+        if view["stale_sources"]:
+            # Historical answers remain readable; old proposals are not actionable.
+            return view
         view["actions"] = [action_view(a) for a in db.execute(
             "SELECT * FROM actions WHERE message_id=? ORDER BY rowid", (row["id"],))]
         view["tool_calls"] = [{"tool": t["tool"], "status": t["status"], "arguments": json.loads(t["arguments"]),

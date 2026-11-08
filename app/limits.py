@@ -36,8 +36,9 @@ def document_quota(db, chunks, replacing=None):
         return
     if replacing is None:
         cap(db.execute('SELECT COUNT(*) FROM documents').fetchone()[0], 'MAX_DOCUMENTS',100)
-    current = db.execute('SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0) FROM chunks WHERE document_id<>?',
-                         (replacing or '',)).fetchone()[0]
+    # Replacements archive the old text, so both active and archived text count.
+    current = sum(db.execute(f'SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0) FROM {table}').fetchone()[0]
+                  for table in ('chunks','archived_chunks'))
     size = sum(len(c[3].encode('utf-8')) for c in chunks)
     if current + size > setting('MAX_DOCUMENT_TEXT_BYTES',20*1024*1024):
         raise HTTPException(413, 'Demo document storage quota reached')

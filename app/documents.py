@@ -142,6 +142,9 @@ def replace_document(document_id, expected_version, filename, pages):
             raise HTTPException(409, "Document changed; reload its version before replacing")
         document_quota(db, chunks, replacing=document_id)
         db.execute("DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
+        db.execute("""INSERT INTO archived_chunks(id,document_id,filename,document_version,visibility,page_number,text)
+            SELECT id,document_id,?,?,?,page_number,text FROM chunks WHERE document_id=?""",
+            (document['filename'],document['version'],document['visibility'],document_id))
         db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
         db.execute("UPDATE documents SET filename=?,page_count=?,version=version+1 WHERE id=?",
                    (filename, len(pages), document_id))

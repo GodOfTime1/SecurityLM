@@ -13,18 +13,36 @@ def connection():
     path.touch(mode=0o600, exist_ok=True)
     if os.name == "posix":
         path.chmod(0o600)
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=5.0)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    db.execute("PRAGMA busy_timeout = 5000")
     try:
-        with db:
-            yield db
+        try:
+            with db:
+                yield db
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, 'sqlite_errorcode', 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                from fastapi import HTTPException
+                raise HTTPException(503, 'Database is busy; retry shortly', headers={'Retry-After':'1'}) from None
+            raise
     finally:
         db.close()
 
 
 def initialize():
     with connection() as db:
+        # Avoid the documented WAL-reset corruption bug in unpatched SQLite.
+        version=sqlite3.sqlite_version_info
+        wal_safe=(version>=(3,51,3) or (3,44,6)<=version<(3,45,0) or (3,50,7)<=version<(3,51,0))
+        requested=os.environ.get('SQLITE_JOURNAL_MODE','auto').lower()
+        if requested not in {'auto','wal','delete'}:
+            raise RuntimeError('SQLITE_JOURNAL_MODE must be auto, wal, or delete')
+        if requested=='wal' and not wal_safe:
+            raise RuntimeError('Update SQLite before enabling WAL; this runtime predates the WAL-reset fix')
+        mode='WAL' if wal_safe and requested!='delete' else 'DELETE'
+        if db.execute(f"PRAGMA journal_mode={mode}").fetchone()[0].upper()!=mode:
+            raise RuntimeError('SQLite journal mode could not be configured')
         db.executescript("""
         CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY,
@@ -145,3 +163,15 @@ def initialize():
 
         db.execute("""CREATE TABLE IF NOT EXISTS model_catalog (
             id TEXT PRIMARY KEY,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1)""")
+
+        db.execute("""CREATE TABLE IF NOT EXISTS archived_chunks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,document_version INTEGER NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN ('employee','admin')),
+            page_number INTEGER NOT NULL,text TEXT NOT NULL)""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_archived_document ON archived_chunks(document_id)")
+
+        columns={r['name'] for r in db.execute('PRAGMA table_info(archived_chunks)')}
+        if 'visibility' not in columns:
+            db.execute("ALTER TABLE archived_chunks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'admin'")

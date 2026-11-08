@@ -11,6 +11,7 @@ from .model_client import (ModelRequest, ModelUnavailable, Passage, ToolSpec,
                            extract_citations, get_model_client, validate_response)
 from .retrieval import search_documents
 from .tools import TOOLS
+from .inference import generate_reply
 from .turns import reserve_turn, check_reservation, complete_turn, release_turn
 from .provenance import MAX_SOURCES, message_accessible, message_sources, sources_accessible
 
@@ -56,7 +57,7 @@ def _generate_turn(conversation_id, body, user, reservation):
         remaining = 24000
         # Keep recent complete turns within a character budget.
         for row in reversed(rows):
-            if not message_accessible(db, row, user, assistant["id"]):
+            if not message_accessible(db, row, user, assistant["id"], require_current=True):
                 continue
             if len(row["content"]) > remaining:
                 break
@@ -76,7 +77,7 @@ def _generate_turn(conversation_id, body, user, reservation):
         history=history, question=body.content, passages=passages,
         tools=[ToolSpec(n, TOOLS[n].description, TOOLS[n].args_model.model_json_schema()) for n in tool_names])
     try:
-        reply = validate_response(get_model_client().generate(request))
+        reply = validate_response(generate_reply(get_model_client(), request))
     except ModelUnavailable as exc:
         # No messages are stored on failure; the request ID remains bound to its payload.
         raise HTTPException(503, str(exc)) from None
@@ -86,7 +87,7 @@ def _generate_turn(conversation_id, body, user, reservation):
     with connection() as db:
         db.execute("BEGIN IMMEDIATE")
         check_reservation(db, reservation, user)
-        if not sources_accessible(db, sources, user, assistant["id"]):
+        if not sources_accessible(db, sources, user, assistant["id"], require_current=True):
             raise HTTPException(409, "Document access changed; retry your message")
         db.execute("INSERT INTO messages(id,conversation_id,role,content) VALUES (?,?,'user',?)",
                    (user_msg_id, conversation_id, body.content))

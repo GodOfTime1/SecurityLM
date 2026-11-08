@@ -16,8 +16,9 @@ PUBLIC_PATHS = frozenset({'/health', '/docs', '/docs/oauth2-redirect', '/redoc',
 class SecurityMiddleware:
     def __init__(self, app):
         self.app = app
-        # Per-process bound on bodies buffered and requests handled concurrently.
+        # Separate bounds for body buffering and memory-heavy multipart uploads.
         self.slots = BoundedSemaphore(8)
+        self.upload_slots = BoundedSemaphore(2)
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
@@ -38,6 +39,8 @@ class SecurityMiddleware:
 
         headers = scope.get('headers', [])
         path = scope['path']
+        if path == '/health' and scope['method'] in {'GET','HEAD'}:
+            return await self.app(scope, receive, secure_send)
         parts = path.rstrip('/').split('/')
         upload = ((path.rstrip('/') == '/documents' and scope['method'] == 'POST')
                   or (len(parts) == 3 and parts[1] == 'documents' and scope['method'] == 'PUT'))
@@ -67,7 +70,13 @@ class SecurityMiddleware:
                 return await reject(413, 'Request body too large')
         if not self.slots.acquire(blocking=False):
             return await reject(503, 'Server busy; retry later')
+        body_slot_held = True
+        upload_slot_held = False
         try:
+            if upload:
+                if not self.upload_slots.acquire(blocking=False):
+                    return await reject(503, 'Uploads are busy; retry shortly')
+                upload_slot_held = True
             body = bytearray()
             deadline = time.monotonic() + BODY_TIMEOUT
             while True:
@@ -94,6 +103,11 @@ class SecurityMiddleware:
                     return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
                 return await receive()
 
+            self.slots.release()
+            body_slot_held = False
             await self.app(scope, replay, secure_send)
         finally:
-            self.slots.release()
+            if body_slot_held:
+                self.slots.release()
+            if upload_slot_held:
+                self.upload_slots.release()

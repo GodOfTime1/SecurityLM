@@ -15,19 +15,23 @@ def message_sources(row):
         return None
 
 
-def sources_accessible(db, sources, user, assistant_id):
+def sources_accessible(db, sources, user, assistant_id, require_current=False):
     if sources is None or len(sources) > MAX_SOURCES:
         return False
     if not sources:
         return True
     ids = list(set(sources))
-    found = db.execute(f'''SELECT COUNT(DISTINCT c.id) FROM chunks c
+    source_sql = 'SELECT c.id,c.document_id,d.visibility AS source_visibility FROM chunks c JOIN documents d ON d.id=c.document_id'
+    if not require_current:
+        source_sql += ' UNION ALL SELECT id,document_id,visibility AS source_visibility FROM archived_chunks'
+    found = db.execute(f'''SELECT COUNT(DISTINCT c.id) FROM ({source_sql}) c
         JOIN documents d ON d.id=c.document_id
         JOIN assistant_documents ad ON ad.document_id=d.id
         WHERE ad.assistant_id=? AND (d.visibility='employee' OR ?='admin')
-          AND c.id IN ({','.join('?' for _ in ids)})''', (assistant_id, user.role, *ids)).fetchone()[0]
+          AND (c.source_visibility='employee' OR ?='admin')
+          AND c.id IN ({','.join('?' for _ in ids)})''', (assistant_id, user.role, user.role, *ids)).fetchone()[0]
     return found == len(ids)
 
 
-def message_accessible(db, row, user, assistant_id):
-    return row['role'] != 'assistant' or sources_accessible(db, message_sources(row), user, assistant_id)
+def message_accessible(db, row, user, assistant_id, require_current=False):
+    return row['role'] != 'assistant' or sources_accessible(db, message_sources(row), user, assistant_id, require_current)

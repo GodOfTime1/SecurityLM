@@ -122,6 +122,7 @@ class DeploymentTests(ChatBase):
                              files={'file':('new.txt',b'VPN abcdef')})
             self.assertEqual(r.status_code,413)
             self.assertIn('VPN abc',self.client.get(f"/documents/{d['id']}/chunks",headers=self.admin).text)
+            os.environ['MAX_DOCUMENT_TEXT_BYTES']='14'  # 7 archived + 7 current bytes
             r=self.client.put(f"/documents/{d['id']}",headers=self.admin,data={'expected_version':'1'},
                              files={'file':('new.txt',b'VPN new')})
             self.assertEqual(r.status_code,200)

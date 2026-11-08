@@ -104,8 +104,16 @@ class DeploymentMiddleware:
         self.ips = {}
 
     async def __call__(self, scope, receive, send):
-        if scope['type'] != 'http' or not production():
+        if scope['type'] != 'http':
             return await self.app(scope, receive, send)
+        if not production():
+            origins = values('DEV_CORS_ORIGINS')
+            # No implicit localhost allowlist: list only the frontend you actually use.
+            if '*' in origins:
+                return await JSONResponse({'detail':'Development CORS requires explicit origins'},status_code=503)(scope,receive,send)
+            return await CORSMiddleware(self.app,allow_origins=list(origins),
+                allow_methods=['GET','POST','PUT','PATCH','DELETE'],
+                allow_headers=['Content-Type','X-API-Key'],allow_credentials=False)(scope,receive,send)
         request_id, started, status = str(uuid4()), time.monotonic(), 500
         async def marked(message):
             nonlocal status

@@ -77,15 +77,16 @@ class BackendFeatureTests(ChatBase):
             self.assertEqual(db.execute('SELECT version FROM documents WHERE id=?', (d['id'],)).fetchone()[0], 1)
         self.assertTrue(self.client.post('/search', headers=self.employee, json={'query': 'ORIGINAL'}).json()['results'])
 
-    def test_replacement_withholds_old_answer_and_blocks_old_action(self):
+    def test_replacement_preserves_historical_answer_and_blocks_old_action(self):
         d = self.upload('old.txt', b'VPN OLD-SECRET')
         c = self.conversation(self.assistant([d['id']], ['create_ticket']))
         msg = self.say(c, 'VPN ticket').json()['assistant_message']
         action = msg['actions'][0]
         self.assertEqual(self.replacement(d).status_code, 200)
         r = self.client.get(f"/conversations/{c['id']}", headers=self.employee)
-        self.assertNotIn('OLD-SECRET', r.text)
-        self.assertTrue(r.json()['messages'][1]['redacted'])
+        self.assertIn('OLD-SECRET', r.text)
+        self.assertTrue(r.json()['messages'][1]['stale_sources'])
+        self.assertFalse(r.json()['messages'][1]['citations'][0]['is_current'])
         self.assertEqual(self.client.post(f"/actions/{action['id']}/approve", headers=self.employee, json={'version': 1}).status_code, 404)
 
     def test_concurrent_replacements_have_one_winner(self):
@@ -190,8 +191,9 @@ class BackendFeatureTests(ChatBase):
         self.replacement(d)
         replay = self.post_turn(c, rid)
         self.assertEqual(replay.status_code, 201)
-        self.assertTrue(replay.json()['assistant_message']['redacted'])
-        self.assertNotIn('OLD-SECRET', replay.text)
+        self.assertTrue(replay.json()['assistant_message']['stale_sources'])
+        self.assertIn('OLD-SECRET', replay.text)
+        self.assertEqual(replay.json()['assistant_message']['actions'],[])
         self.assertEqual(self.count('messages'), 2)
 
     def test_expired_attempt_is_fenced_after_takeover(self):

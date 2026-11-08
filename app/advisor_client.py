@@ -19,6 +19,7 @@ class AdvisorSettings:
     base_url: str = ''
     timeout: float = 60
     allow_remote: bool = False
+    data_policy: str = "auto"
 
 
 def get_advisor_settings() -> AdvisorSettings:
@@ -39,10 +40,10 @@ def get_advisor_settings() -> AdvisorSettings:
     remote = os.environ.get('ADVISOR_ALLOW_REMOTE', '0')
     if remote not in {'0', '1'}:
         raise ModelUnavailable('ADVISOR_ALLOW_REMOTE must be 0 or 1')
-    config = AdvisorSettings(backend, model, os.environ.get('ADVISOR_BASE_URL','http://127.0.0.1:11434'), timeout, remote=='1')
+    config = AdvisorSettings(backend, model, os.environ.get('ADVISOR_BASE_URL','http://127.0.0.1:11434'), timeout, remote=='1', os.environ.get('ADVISOR_DATA_POLICY','auto'))
     # Reuse URL policy validation without contacting a server. The explicit flag
     # prevents document-chat OLLAMA_ALLOW_REMOTE from authorizing advisor traffic.
-    OllamaModel(config.base_url, config.model, config.timeout, allow_remote=config.allow_remote)
+    OllamaModel(config.base_url, config.model, config.timeout, allow_remote=config.allow_remote, data_policy=config.data_policy)
     return config
 
 
@@ -63,5 +64,5 @@ def get_advisor_client() -> AdvisorClient:
     if config.backend == 'disabled':
         raise ModelUnavailable('Advisor is disabled until a runtime is configured')
     adapter = (EchoModel() if config.backend == 'echo' else
-               OllamaModel(config.base_url,config.model,config.timeout,allow_remote=config.allow_remote))
+               OllamaModel(config.base_url,config.model,config.timeout,allow_remote=config.allow_remote, data_policy=config.data_policy))
     return AdvisorClient(adapter, config)

@@ -14,6 +14,7 @@ import os
 import re
 from dataclasses import dataclass, field
 import httpx
+from .pii import protect_messages, SensitiveDataError
 
 
 MAX_MODEL_BYTES = 256 * 1024
@@ -138,7 +139,7 @@ class EchoModel:
 class OllamaModel:
     """Talks to a local Ollama server. URL comes from server config, never from users."""
 
-    def __init__(self, base_url: str, default_model: str, timeout: float, *, allow_remote: bool | None = None):
+    def __init__(self, base_url: str, default_model: str, timeout: float, *, allow_remote: bool | None = None, data_policy: str | None = None):
         remote_allowed = (os.environ.get("OLLAMA_ALLOW_REMOTE") == "1") if allow_remote is None else allow_remote
         try:
             parsed = urlsplit(base_url)
@@ -158,6 +159,10 @@ class OllamaModel:
                 raise ValueError
         except ValueError:
             raise ModelUnavailable("Invalid model server configuration") from None
+        requested_policy = os.environ.get('MODEL_DATA_POLICY','auto') if data_policy is None else data_policy
+        if requested_policy not in {'auto','allow','block_sensitive','redact'}:
+            raise ModelUnavailable('Invalid model data policy')
+        self.data_policy = ('allow' if local else 'block_sensitive') if requested_policy=='auto' else requested_policy
         self.base_url, self.default_model, self.timeout = base_url.rstrip("/"), default_model, timeout
 
     async def _request(self, payload):
@@ -183,7 +188,11 @@ class OllamaModel:
         model = req.model or self.default_model
         if not model:
             raise ModelUnavailable("No model is selected for this assistant")
-        payload = {"model": model, "messages": build_messages(req), "stream": False,
+        try:
+            messages = protect_messages(build_messages(req), self.data_policy)
+        except SensitiveDataError as exc:
+            raise ModelUnavailable(str(exc)) from None
+        payload = {"model": model, "messages": messages, "stream": False,
                    "options": {"temperature": 0.2, "num_predict": 1024, "num_ctx": 8192}}
         if req.response_schema is not None:
             payload["format"] = req.response_schema
