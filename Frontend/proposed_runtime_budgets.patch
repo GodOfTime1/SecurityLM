@@ -1,0 +1,33 @@
+--- a/app/model_client.py
++++ b/app/model_client.py
+@@ -23,8 +23,8 @@
+ # All three product presets share one local Qwen model.
+ PRESET_TOKEN_BUDGETS = {
+     "preset:snake2": 128,
+-    "preset:llama4": 256,
+-    "preset:megladon8": 512,
++    "preset:llama4": 512,
++    "preset:megladon8": 1024,
+ }
+ 
+ 
+--- a/app/presets.py
++++ b/app/presets.py
+@@ -10,7 +10,7 @@
+ from .auth import User, admin_user, current_user
+ from .db import connection
+ from .model_catalog import CatalogModel
+-from .model_client import ModelUnavailable, get_model_client
++from .model_client import ModelUnavailable, get_model_client, PRESET_TOKEN_BUDGETS
+ 
+ router = APIRouter(tags=['runtime and presets'])
+ probe_slots=BoundedSemaphore(2)
+@@ -60,7 +60,7 @@
+             mapped=False
+         record=existing.get(preset['id'])
+         available=bool(record and record['enabled'] and record['runtime_model']=='preset:'+preset['id'])
+-        items.append({k:v for k,v in preset.items() if k!='env'} | {'catalog_available':available,'runtime_mapped':mapped})
++        items.append({k:v for k,v in preset.items() if k!='env'} | {'catalog_available':available,'runtime_mapped':mapped, 'reply_tokens':PRESET_TOKEN_BUDGETS['preset:'+preset['id']]})
+     return {'presets':items, 'memory_note':'2/4/8 GB are target budgets, not verified RAM/VRAM requirements or model parameter counts.'}
+ 
+ 

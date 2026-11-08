@@ -1,0 +1,42 @@
+/* Native Streamlit controls, one navigation system, no remote assets. */
+:root { --sl-accent:#52dfc5; --sl-line:rgba(150,180,205,.18); }
+[data-testid="stSidebarNav"] {display:none !important;}
+.block-container {max-width:1280px;padding-top:1.8rem;padding-bottom:3rem;}
+[data-testid="stAppViewContainer"] {background-image:radial-gradient(ellipse at 95% 0%,rgba(9,151,136,.055),transparent 42%);}
+[data-testid="stSidebar"] {border-right:1px solid var(--sl-line);}
+[data-testid="stSidebar"] .block-container {padding-top:1.4rem;}
+[data-testid="stSidebar"] h1 {font-size:1.6rem;}
+[data-testid="stSidebar"] [data-testid="stPageLink"] {padding:.15rem 0;}
+[data-testid="stPageLink"] a {border-radius:10px;padding:.6rem .8rem;}
+[data-testid="stPageLink"] a:hover {background:rgba(82,223,197,.08);}
+h1,h2,h3 {letter-spacing:-.035em;}
+h1 {font-size:2.65rem;line-height:1.12;}
+h2 {font-size:1.65rem;}
+[data-testid="stCaptionContainer"] {line-height:1.6;}
+[data-testid="stVerticalBlockBorderWrapper"], [data-testid="stForm"] {border-radius:18px;border-color:var(--sl-line);}
+[data-testid="stButton"] button,[data-testid="stFormSubmitButton"] button {border-radius:11px;min-height:2.65rem;font-weight:550;}
+[data-testid="stButton"] button[kind="primary"],[data-testid="stFormSubmitButton"] button[kind="primary"] {background:#087f70;color:white;border-color:#52dfc5;box-shadow:0 4px 14px rgba(8,127,112,.14);}
+[data-testid="stMetric"] {padding:.3rem .2rem;}
+[data-testid="stMetricValue"] {font-size:1.65rem;letter-spacing:-.035em;}
+[data-testid="stChatMessage"] {padding:1.2rem;border:1px solid var(--sl-line);border-radius:18px;margin-bottom:.8rem;}
+[data-testid="stChatInput"] {border-radius:16px;box-shadow:0 6px 24px rgba(0,0,0,.04);}
+[data-testid="stExpander"] {border-color:var(--sl-line);border-radius:14px;}
+[data-baseweb="tab-list"] {gap:1.8rem;border-bottom:1px solid var(--sl-line);padding-bottom:.35rem;}
+[data-baseweb="tab"] {font-weight:600;}
+.st-key-hero {background:linear-gradient(115deg,rgba(38,191,166,.12),rgba(56,112,188,.06));border:1px solid rgba(82,223,197,.22);border-radius:24px;padding:1.8rem 2rem;margin-bottom:.6rem;}
+.sl-eyebrow {color:#52dfc5;font-size:.72rem;font-weight:750;letter-spacing:.16em;text-transform:uppercase;margin:0 0 .7rem;}
+.sl-brand {display:flex;align-items:center;gap:.7rem;margin-bottom:1.5rem;}
+.sl-brand-mark {width:36px;height:40px;background:#087f70;color:white;display:grid;place-items:center;border-radius:12px 12px 16px 16px;font-size:19px;font-weight:800;}
+.sl-brand-name {font-size:1.3rem;font-weight:750;letter-spacing:-.04em;}
+.sl-brand-sub {font-size:.69rem;opacity:.65;letter-spacing:.10em;text-transform:uppercase;}
+.sl-token {font-size:2.8rem;font-weight:750;letter-spacing:-.06em;line-height:1.1;margin:.8rem 0 .2rem;}
+.sl-token small {font-size:.8rem;font-weight:500;letter-spacing:0;opacity:.65;}
+button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible {outline:3px solid #18a999 !important;outline-offset:3px;}
+@media(prefers-reduced-motion:no-preference) {button,a {transition:background .15s ease,box-shadow .15s ease;}}
+@media(max-width:640px) {.block-container {padding:1rem 1rem 3rem;}h1 {font-size:2rem;}.st-key-hero {padding:1.2rem;border-radius:18px;}[data-testid="stChatMessage"] {padding:.8rem;}[data-baseweb="tab-list"] {gap:1rem;}}
+
+/* Model cards keep matching content and action rows at every width. */
+
+[data-testid="stColumn"] > [data-testid="stVerticalBlockBorderWrapper"] {background:rgba(143,177,204,.025);}
+.sl-brand-name {color:#e7eef5;}
+.sl-brand-sub {color:#9cb0c2;opacity:1;}

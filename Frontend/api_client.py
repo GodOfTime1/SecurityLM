@@ -5,6 +5,7 @@ from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
+from constants import FILE_TYPES, MAX_UPLOAD_BYTES
 
 
 class APIError(Exception):
@@ -37,20 +38,33 @@ def resource(value):
     return quote(str(value), safe="")
 
 
+def validate_file(filename, data):
+    if not filename.lower().endswith(tuple('.'+ext for ext in FILE_TYPES)):
+        raise APIError("Use PDF, TXT, or MD files.")
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        raise APIError("Choose a nonempty file no larger than 10 MiB.")
+
+
 class BackendAPI:
     def __init__(self, key, *, transport=None):
         self.key = key
         self.transport = transport
+        self.on_mutation = None
 
     def request(self, method, path, **kwargs):
         # The browser/user cannot choose a destination for their credential.
+        parts = urlsplit(path)
+        if not path.startswith('/') or path.startswith('//') or parts.scheme or parts.netloc or '\\' in path:
+            raise APIError('API requests must use a relative backend path.')
         try:
             with httpx.Client(base_url=backend_url(), headers={"X-API-Key": self.key},
                               timeout=httpx.Timeout(150, connect=5), trust_env=False,
                               follow_redirects=False, transport=self.transport) as client:
                 response = client.request(method, path, **kwargs)
         except httpx.HTTPError:
-            raise APIError("The backend did not respond. For a chat message, use Retry to keep the same request ID.") from None
+            message = ('The backend did not respond. Refresh and try again.' if method.upper() in {'GET', 'HEAD'}
+                       else 'The response was lost; this change may already be saved. Refresh before repeating it.')
+            raise APIError(message) from None
         if response.is_redirect:
             raise APIError("Backend redirects are disabled. Check BACKEND_URL.", response.status_code)
         if response.is_error:
@@ -71,6 +85,8 @@ class BackendAPI:
                 else:
                     message = "Invalid input. Check the required fields and their limits."
             raise APIError(message, response.status_code)
+        if method.upper() not in {"GET", "HEAD", "OPTIONS"} and self.on_mutation:
+            self.on_mutation()
         if response.status_code == 204:
             return None
         try:
@@ -81,8 +97,15 @@ class BackendAPI:
     def all_items(self, path, field):
         items = []
         offset = 0
+        seen = set()
         while True:
-            page = self.request("GET", path, params={"limit": 100, "offset": offset})[field]
+            result = self.request("GET", path, params={"limit": 100, "offset": offset})
+            page = result.get(field) if isinstance(result, dict) else None
+            if not isinstance(page, list) or any(not isinstance(item, dict) or not isinstance(item.get('id'), str) for item in page):
+                raise APIError('The backend returned an unexpected list response.')
+            if any(item['id'] in seen for item in page) or len({item['id'] for item in page}) != len(page):
+                raise APIError('The list changed while loading. Refresh to load it again.')
+            seen.update(item['id'] for item in page)
             items.extend(page)
             if len(page) < 100:
                 return items
@@ -93,10 +116,7 @@ class BackendAPI:
         return self.request("GET", f"/conversations/{resource(conversation_id)}", params={"limit": 200})
 
     def upload(self, filename, data, visibility):
-        if not filename.lower().endswith((".pdf", ".txt", ".md")):
-            raise APIError("Use PDF, TXT, or MD files.")
-        if not data or len(data) > 10 * 1024 * 1024:
-            raise APIError("Choose a nonempty file no larger than 10 MiB.")
+        validate_file(filename, data)
         return self.request("POST", "/documents", files={"file": (filename, data)}, data={"visibility": visibility})
 
 

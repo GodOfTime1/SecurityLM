@@ -1,7 +1,14 @@
+[server]
+maxUploadSize = 10
+[browser]
+gatherUsageStats = false
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = false
 [theme]
 base = "dark"
-primaryColor = "#31d0aa"
-backgroundColor = "#0c1120"
-secondaryBackgroundColor = "#151d2e"
-textColor = "#e9edf5"
+primaryColor = "#26bfa6"
+backgroundColor = "#0b121b"
+secondaryBackgroundColor = "#131f2c"
+textColor = "#e7eef5"
 font = "sans serif"
