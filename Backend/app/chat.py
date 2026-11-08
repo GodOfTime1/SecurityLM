@@ -1,7 +1,6 @@
 """POST /conversations/{id}/messages: retrieve permitted passages, call the model, store the turn."""
 import json
-import time
-from dataclasses import replace
+import logging
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,17 +8,18 @@ from .actions import ToolRejected, create_draft
 from .auth import User, current_user
 from .conversations import owned_conversation
 from .db import connection
-from .model_client import (ModelRequest, ModelUnavailable, Passage, ToolSpec,
+from .model_client import (ModelRequest, ModelResponse, ModelUnavailable, Passage, ToolSpec,
                            CitationError, extract_citations, get_model_client,
                            validate_response, validate_citations)
 from .citation_utils import ABSTENTION, strip_history_citations
 from .retrieval import search_documents, contextual_query
 from .tools import TOOLS
 from .inference import generate_reply
-from .turns import reserve_turn, check_reservation, complete_turn, release_turn, LEASE_SECONDS
+from .turns import reserve_turn, check_reservation, complete_turn, release_turn
 from .provenance import MAX_SOURCES, message_accessible, message_sources, sources_accessible
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
+logger = logging.getLogger(__name__)
 HISTORY_LIMIT = 10
 PASSAGE_LIMIT = 5
 MAX_PROPOSALS = 3
@@ -35,6 +35,21 @@ class MessageIn(BaseModel):
 def _json_small(value, limit: int = 2000) -> str:
     text = json.dumps(value, default=str)
     return text if len(text) <= limit else json.dumps({"truncated": True})
+
+
+def _citation_fallback(passages):
+    """Expose retrieved sources without attributing an unvalidated model claim.
+
+    Source text stays in the existing citation expanders. No model proposals
+    survive this fallback, and the normal source/access checks still apply.
+    """
+    if not passages:
+        return ModelResponse(ABSTENTION)
+    text = ("The model's source references could not be validated, so its answer "
+            "was not used. Review the retrieved passages below; they may not "
+            "answer your question.\n\n")
+    text += '\n'.join(f'Retrieved passage [{p.n}]' for p in passages)
+    return ModelResponse(text=text)
 
 
 @router.post("/{conversation_id}/messages", status_code=201)
@@ -94,27 +109,14 @@ def _generate_turn(conversation_id, body, user, reservation):
         try:
             reply = validate_citations(reply, passages)
         except CitationError:
-            # One correction attempt, with the same permitted passages. Renew the
-            # fenced lease so two slow inference calls cannot outlive it silently.
-            with connection() as db:
-                db.execute('BEGIN IMMEDIATE')
-                check_reservation(db, reservation, user)
-                if not sources_accessible(db, sources, user, assistant['id'], require_current=True):
-                    raise HTTPException(409, 'Document access changed; retry your message')
-                db.execute('UPDATE chat_requests SET lease_until=? WHERE conversation_id=? AND request_id=? AND token=?',
-                           (time.time() + LEASE_SECONDS, conversation_id, str(body.request_id), reservation.token))
-            correction = ("\nYour previous response had missing or invalid source citations. "
-                          "Answer the original question again using only the current passages. "
-                          "Cite supporting passages with their exact allowed [n] markers. "
-                          f"If unsupported, respond exactly: {ABSTENTION}")
-            corrected = validate_response(generate_reply(client, replace(
-                request, system_prompt=request.system_prompt + correction)))
-            try:
-                reply = validate_citations(corrected, passages)
-            except CitationError:
-                raise ModelUnavailable('The model could not produce valid source citations after one correction. Try again.') from None
+            # Format noncompliance is not a runtime outage. Do not spend a second
+            # GPU call (which could exceed the frontend's total read timeout).
+            reply = validate_citations(_citation_fallback(passages), passages)
     except ModelUnavailable as exc:
         # No messages are stored on failure; the request ID remains bound to its payload.
+        # ModelUnavailable messages are defined by the adapter contract as safe.
+        # Do not log prompts, retrieved passages, credentials, or raw exceptions.
+        logger.warning('Document inference failed: %s', exc)
         raise HTTPException(503, str(exc)) from None
 
     citations = extract_citations(reply.text, passages)

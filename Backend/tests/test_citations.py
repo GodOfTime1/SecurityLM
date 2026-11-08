@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.db import connection
 from app.model_client import (ModelRequest, ModelResponse, Passage, CitationError,
-                              build_messages, extract_citations, validate_citations)
+                              ModelUnavailable, build_messages, extract_citations, validate_citations)
 from app.citation_utils import (ABSTENTION, citation_numbers, normalize_citations,
                                 strip_history_citations)
 
@@ -103,25 +103,24 @@ class CitationAPITests(unittest.TestCase):
     def history(self):
         return self.client.get(f"/conversations/{self.conv['id']}", headers=self.employee).json()['messages']
 
-    def test_missing_citation_is_corrected_and_saved_canonically(self):
-        model = SequenceModel('Restart VPN.', 'Restart VPN [ 1 ].')
+    def test_missing_citation_returns_labeled_sources_without_a_second_model_call(self):
+        model = SequenceModel('UNVALIDATED-CLAIM')
         with patch('app.chat.get_model_client', return_value=model):
             response = self.say()
         self.assertEqual(response.status_code, 201, response.text)
         message = response.json()['assistant_message']
-        self.assertEqual(message['content'], 'Restart VPN [1].')
+        self.assertIn('answer was not used', message['content'])
+        self.assertNotIn('UNVALIDATED-CLAIM', message['content'])
         self.assertEqual(message['citations'][0]['document_id'], self.doc['id'])
-        self.assertEqual(len(model.requests), 2)
-        self.assertEqual(model.requests[0].passages, model.requests[1].passages)
+        self.assertEqual(len(model.requests), 1)
         self.assertEqual(len(self.history()), 2)
 
-    def test_repeated_failure_saves_nothing_and_releases_request_for_retry(self):
+    def test_true_runtime_failure_still_saves_nothing_and_allows_retry(self):
         request_id = str(uuid4())
-        model = SequenceModel('Unsupported [8]', 'Still unsupported [9]')
-        with patch('app.chat.get_model_client', return_value=model):
+        with patch('app.chat.generate_reply', side_effect=ModelUnavailable('The model is unavailable')) as call:
             response = self.say(request_id)
         self.assertEqual(response.status_code, 503, response.text)
-        self.assertEqual(len(model.requests), 2)
+        self.assertEqual(call.call_count, 1)
         self.assertEqual(self.history(), [])
         good = SequenceModel('Restart VPN [1]')
         with patch('app.chat.get_model_client', return_value=good):
@@ -138,12 +137,15 @@ class CitationAPITests(unittest.TestCase):
         self.assertEqual(len(model.requests), 1)
         self.assertEqual(len(response.json()['assistant_message']['citations']), 1)
 
-    def test_uncited_second_answer_is_also_rejected(self):
-        model = SequenceModel('Restart VPN.', 'Restart VPN again.')
+    def test_invalid_source_numbers_use_real_retrieved_sources_instead(self):
+        model = SequenceModel('Unsupported [9]')
         with patch('app.chat.get_model_client', return_value=model):
             response = self.say()
-        self.assertEqual(response.status_code, 503, response.text)
-        self.assertEqual(self.history(), [])
+        self.assertEqual(response.status_code, 201, response.text)
+        message = response.json()['assistant_message']
+        self.assertNotIn('[9]', message['content'])
+        self.assertEqual([c['n'] for c in message['citations']], [1])
+        self.assertEqual(len(model.requests), 1)
 
     def test_supported_abstention_does_not_retry_or_invent_citations(self):
         model = SequenceModel(ABSTENTION)
@@ -153,12 +155,12 @@ class CitationAPITests(unittest.TestCase):
         self.assertEqual(response.json()['assistant_message']['citations'], [])
         self.assertEqual(len(model.requests), 1)
 
-    def test_access_change_during_correction_blocks_storage(self):
+    def test_access_change_during_valid_model_response_blocks_storage(self):
         def hide_source(call):
-            if call == 2:
+            if call == 1:
                 with connection() as db:
                     db.execute("UPDATE documents SET visibility='admin' WHERE id=?", (self.doc['id'],))
-        model = SequenceModel('No citation', 'Restart VPN [1]', hook=hide_source)
+        model = SequenceModel('Restart VPN [1]', hook=hide_source)
         with patch('app.chat.get_model_client', return_value=model):
             response = self.say()
         self.assertEqual(response.status_code, 409, response.text)
@@ -175,7 +177,7 @@ class CitationAPITests(unittest.TestCase):
         self.client.delete(f"/documents/{self.doc['id']}", headers=self.admin)
         self.assertTrue(all(m.get('redacted') for m in self.history() if m['role']=='assistant'))
 
-    def test_access_change_before_correction_blocks_second_model_call(self):
+    def test_access_change_during_fallback_blocks_storage(self):
         def hide_source(call):
             if call == 1:
                 with connection() as db:
@@ -187,16 +189,30 @@ class CitationAPITests(unittest.TestCase):
         self.assertEqual(len(model.requests), 1)
         self.assertEqual(self.history(), [])
 
-    def test_lease_is_extended_before_correction(self):
-        leases = []
-        def check_lease(call):
-            with connection() as db:
-                leases.append(db.execute('SELECT lease_until FROM chat_requests').fetchone()[0])
-        model = SequenceModel('No citation', 'Restart VPN [1]', hook=check_lease)
+    def test_fallback_discards_actions_and_can_be_replayed(self):
+        request_id = str(uuid4())
+        proposal = {'tool':'create_ticket', 'arguments':{'title':'UNVALIDATED', 'description':'UNVALIDATED'}}
+        self.client.put(f"/assistants/{self.assistant['id']}/tools", headers=self.admin,
+                        json={'tools':['create_ticket']})
+        model = SequenceModel(ModelResponse('UNVALIDATED', actions=[proposal]))
         with patch('app.chat.get_model_client', return_value=model):
-            response = self.say()
+            response = self.say(request_id)
+            replay = self.say(request_id)
         self.assertEqual(response.status_code, 201, response.text)
-        self.assertGreater(leases[1], leases[0])
+        self.assertEqual(response.json()['assistant_message']['actions'], [])
+        self.assertTrue(replay.json()['replayed'])
+        self.assertEqual(len(model.requests), 1)
+        with connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM actions').fetchone()[0], 0)
+
+    def test_fallback_sources_are_withheld_after_document_deletion(self):
+        model = SequenceModel('UNCITED')
+        with patch('app.chat.get_model_client', return_value=model):
+            self.assertEqual(self.say().status_code, 201)
+        self.client.delete(f"/documents/{self.doc['id']}", headers=self.admin)
+        message = self.history()[1]
+        self.assertTrue(message['redacted'])
+        self.assertEqual(message['citations'], [])
 
 
 if __name__ == '__main__':
