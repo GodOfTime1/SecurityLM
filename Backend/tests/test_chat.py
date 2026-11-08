@@ -132,8 +132,9 @@ class ChatTests(ChatBase):
         doc = self.upload("v.txt", b"VPN setup")
         conv = self.conversation(self.assistant([doc["id"]]))
         with patch("app.chat.get_model_client", return_value=FakeModel("see [7] and [1] and [99]")):
-            msg = self.say(conv, "VPN").json()["assistant_message"]
-        self.assertEqual([c["n"] for c in msg["citations"]], [1])
+            response = self.say(conv, "VPN")
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(self.count('messages'), 0)
 
     def test_answer_and_details_withheld_when_source_deleted_or_hidden(self):
         for change in ("hidden", "deleted"):
