@@ -69,9 +69,22 @@ class SecurityV2Tests(unittest.TestCase):
 
     def test_uncited_source_revocation_redacts_answer_actions_and_history(self):
         d, _, c = self.setup_chat()
-        reply = ModelResponse('CONFIDENTIAL-TEXT', [{'tool': 'create_ticket', 'arguments': {
+        reply = ModelResponse('CONFIDENTIAL-TEXT [1]', [{'tool': 'create_ticket', 'arguments': {
             'title': 'CONFIDENTIAL-TEXT', 'description': 'private text'}}])
-        action = self.send(c, reply=reply).json()['assistant_message']['actions'][0]
+        response = self.send(c, reply=reply)
+        self.assertEqual(response.status_code, 201, response.text)
+        message = response.json()['assistant_message']
+        action = message['actions'][0]
+        # Simulate an uncited historical answer from before citation enforcement.
+        # Keep its recorded source dependencies and action; runtime validation
+        # stays enabled for every new answer created by this test.
+        with connection() as db:
+            db.execute("UPDATE messages SET content='CONFIDENTIAL-TEXT',citations='[]' WHERE id=?", (message['id'],))
+            stored = db.execute('SELECT source_chunks FROM messages WHERE id=?', (message['id'],)).fetchone()
+            self.assertTrue(json.loads(stored['source_chunks']))
+        before = self.client.get(f"/conversations/{c['id']}", headers=self.employee).json()['messages'][1]
+        self.assertEqual(before['content'], 'CONFIDENTIAL-TEXT')
+        self.assertEqual(before['citations'], [])
         with connection() as db:
             db.execute("UPDATE documents SET visibility='admin' WHERE id=?", (d['id'],))
         r = self.client.get(f"/conversations/{c['id']}", headers=self.employee)
@@ -86,8 +99,19 @@ class SecurityV2Tests(unittest.TestCase):
 
     def test_transitive_history_sources_and_collection_removal(self):
         _, a, c = self.setup_chat()
-        self.assertEqual(self.send(c, reply=ModelResponse('CONFIDENTIAL-TEXT')).status_code, 201)
-        self.assertEqual(self.send(c, 'summarize that', ModelResponse('DERIVED-SECRET')).status_code, 201)
+        first = self.send(c, reply=ModelResponse('CONFIDENTIAL-TEXT [1]'))
+        self.assertEqual(first.status_code, 201, first.text)
+        # No fresh retrieval: the second answer depends entirely on history.
+        # This proves transitive provenance works even with no inline citations.
+        with patch('app.chat.search_documents', return_value=[]):
+            second = self.send(c, 'summarize that', ModelResponse('DERIVED-SECRET'))
+        self.assertEqual(second.status_code, 201, second.text)
+        self.assertEqual(second.json()['assistant_message']['citations'], [])
+        with connection() as db:
+            sources = [json.loads(row['source_chunks']) for row in db.execute(
+                "SELECT source_chunks FROM messages WHERE conversation_id=? AND role='assistant' ORDER BY rowid", (c['id'],))]
+        self.assertTrue(sources[0])
+        self.assertEqual(set(sources[0]), set(sources[1]))
         self.client.put(f"/assistants/{a['id']}/documents", headers=self.admin, json={'document_ids': []})
         history = self.client.get(f"/conversations/{c['id']}", headers=self.employee).text
         self.assertNotIn('CONFIDENTIAL-TEXT', history)
