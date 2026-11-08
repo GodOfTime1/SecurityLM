@@ -1,4 +1,4 @@
-name: Backend CI
+name: CI
 
 on:
   push:
@@ -9,28 +9,61 @@ permissions:
   contents: read
 
 concurrency:
-  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Workflow-level env IS available inside steps (just not in job-level
+# `defaults.run.working-directory`, which is why the folders are hard-coded below).
 env:
-  # Set to your backend subfolder if this is a frontend/backend monorepo.
-  BACKEND_DIR: .
   APP_ENV: development
   MODEL_BACKEND: echo
   ADVISOR_BACKEND: echo
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  tests:
-    name: Tests (${{ matrix.os }})
+  backend-tests:
+    name: Backend tests (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        python-version: ['3.12']
+        include:
+          # Your local dev environment (Windows + Python 3.14)
+          - os: windows-latest
+            python-version: '3.14'
     defaults:
       run:
-        working-directory: ${{ env.BACKEND_DIR }}
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: Backend/requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+      # Runs every Backend/tests/test_*.py (assistants, backend, chat, deployment,
+      # model selector, presets, review fixes, security, security_v2, advisor infra, ...).
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/package_backend.py --output dist/backend-source.zip
+
+  frontend-tests:
+    name: Frontend integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Frontend
+    env:
+      # The frontend test imports app.main, so the backend must be importable.
+      PYTHONPATH: ${{ github.workspace }}/Backend
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,18 +71,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python -m pip install -r requirements.txt
+          cache: pip
+          cache-dependency-path: |
+            Backend/requirements.txt
+            Frontend/requirements.txt
+      - run: python -m pip install -r ../Backend/requirements.txt -r requirements.txt
       - run: python -m pip check
       - run: python -m unittest discover -s tests -v
-      - run: python scripts/package_backend.py --output dist/backend-source.zip
 
   dependencies:
-    name: Dependency advisory audit
+    name: Dependency advisory audit (${{ matrix.folder }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: ${{ env.BACKEND_DIR }}
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [Backend, Frontend]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,18 +95,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install pip-audit
-      - run: python -m pip_audit -r requirements.txt --strict
+      - run: python -m pip_audit -r ${{ matrix.folder }}/requirements.txt --strict
 
   container:
-    name: Clean container build
-    needs: [tests, dependencies]
+    name: Clean backend container build
+    needs: [backend-tests, frontend-tests, dependencies]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: ${{ env.BACKEND_DIR }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: docker build --tag hackathon-backend:ci .
+      - run: docker build --tag hackathon-backend:ci Backend
