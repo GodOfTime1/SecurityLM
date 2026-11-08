@@ -52,6 +52,7 @@ with st.sidebar:
     
     st.page_link("home.py", label="SLM", icon="🏠")
     st.page_link("pages/Document_Upload.py", label="Document Upload", icon="📄")
+    st.page_link("pages/Help.py", label="Help", icon="❓")
 
 # 3. Main Page Logic
 if st.session_state.selected_model is None:

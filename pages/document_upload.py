@@ -58,6 +58,7 @@ with st.sidebar:
     
     st.page_link("home.py", label="SLM", icon="🏠")
     st.page_link("pages/Document_Upload.py", label="Document Upload", icon="📄")
+    st.page_link("pages/Help.py", label="Help", icon="❓")
 
 # 4. Upload Dialog (Pop-up Window with Full-Width Warning Banner)
 @st.dialog("Upload Documents")
