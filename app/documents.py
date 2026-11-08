@@ -114,6 +114,8 @@ def extract_pages(filename: str, data: bytes) -> list[str]:
         # Do not pass API credentials or database configuration to the parser.
         env = {k: v for k, v in os.environ.items()
                if k in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG"}}
+        if os.environ.get("LD_LIBRARY_PATH"):
+            env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
         try:
             result = subprocess.run(
                 [sys.executable, "-I", str(Path(__file__).with_name("pdf_worker.py"))],
