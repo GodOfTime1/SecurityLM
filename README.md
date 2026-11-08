@@ -22,15 +22,21 @@ This project aims to target the privacy element of AI models where, when asking 
 - Adjust premade assistant profiles
 - Redefine SLM assistant parameters
 
-## Backend
-- Python used as the primary coding language
-- FastAPI used to connect back-end and front end
-- Qwen 2.5-1.5B-instruct used as a demo SML combined with Empire AI remote GPU as a locally hosted server
+## Technology Stack
+- Python: used as the primary coding language
+- FastAPI: used to connect back-end and front end; manages requests, permissions, and model calls
+- Qwen 2.5-1.5B-instruct: used as a demo SLM combined with Empire AI remote GPU as a locally hosted server
+- Streamlit: provides a browser-based interface for creating assistants, loading documents, and managing SLM parameters
   
 ## Tests
 - CI Pipeline used to ensure code is checked when pushed
-- Comprehensive testing suite used to check key functions and security of front and back end
+- Comprehensive testing suite covering key workflows, permissions, and security features
 - Integrated testing used to test communication across modules and recreate accurate system usage
+
+## Current limitations
+- Prototype module that requires further evaluation before real-world usage
+- Doesn't train new SLMs yet
+- Accuracy within the document isn't guaranteed
 
 ## Future development
 
