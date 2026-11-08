@@ -75,9 +75,42 @@ jobs:
           cache-dependency-path: |
             Backend/requirements.txt
             Frontend/requirements-frontend.txt
+      - name: Verify frontend checkout
+        run: |
+          python - <<'PYCODE'
+          import os
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          expected = Path(os.environ["GITHUB_WORKSPACE"]) / "Frontend"
+          if root != expected.resolve():
+              raise SystemExit(f"Wrong frontend working directory: {root}")
+          required = [
+              "home.py", "api_client.py", "ui_common.py", "styles.css",
+              "prompting.py", "conversation_memory.py", "action_ui.py",
+              "constants.py", "session_cache.py", "document_service.py",
+              "help_content.py", "configure_frontend.py",
+              "requirements-frontend.txt", "assets/securitylm-logo.png",
+              "pages/document_upload.py", "pages/help.py", "pages/model_settings.py",
+              "tests/frontend_fixture.py", "tests/test_frontend.py",
+              "tests/test_frontend_integration.py", "tests/test_prompting.py",
+              "tests/test_conversation_memory.py",
+          ]
+          missing = [name for name in required if not (root / name).is_file()]
+          if missing:
+              raise SystemExit(
+                  "Frontend checkout is incomplete. Missing files: " + ", ".join(missing)
+                  + ". Copy the complete frontend into the repository's Frontend/ folder."
+              )
+          print(f"Verified frontend files in {root}")
+          PYCODE
       - run: python -m pip install -r ../Backend/requirements.txt -r requirements-frontend.txt
       - run: python -m pip check
-      - run: python -m unittest discover -s tests -v
+      - name: Verify backend is available for integration tests
+        run: python -c "from app.main import app; print('Backend import verified')"
+      - name: Run frontend tests from the local tests directory
+        # ./tests is intentional: bare 'tests' can resolve to Backend/tests
+        # through PYTHONPATH when Frontend/tests is missing.
+        run: python -m unittest discover -s ./tests -v
 
   dependencies:
     name: Dependency advisory audit (${{ matrix.folder }})
