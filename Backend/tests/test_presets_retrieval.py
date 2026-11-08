@@ -1,7 +1,7 @@
 import os
 import tempfile
 from unittest.mock import patch
-from test_chat import ChatBase, FakeModel
+from tests.test_chat import ChatBase, FakeModel
 from app.model_client import (ModelRequest, ModelResponse, ModelUnavailable, OllamaModel, PRESET_TOKEN_BUDGETS)
 from app.presets import resolve_runtime_model
 
