@@ -20,6 +20,13 @@ from .pii import protect_messages, SensitiveDataError
 MAX_MODEL_BYTES = 256 * 1024
 MAX_REPLY_CHARS = 16000
 
+# All three product presets share one local Qwen model.
+PRESET_TOKEN_BUDGETS = {
+    "preset:snake2": 128,
+    "preset:llama4": 256,
+    "preset:megladon8": 512,
+}
+
 
 class ModelUnavailable(Exception):
     """Model missing, down, slow, or returned something unusable. Message is safe to show users."""
@@ -151,6 +158,7 @@ class EchoModel:
             text = f"From {p.filename}, page {p.page_number}: {p.text[:400]} [1]"
         else:
             text = "I couldn't find that in the documents available to this assistant."
+        text = f"Demo mode (no language model). {text}"
         return ModelResponse(text=text, actions=actions)
 
 
@@ -203,7 +211,8 @@ class OllamaModel:
                 return parse_actions(text)
 
     def generate(self, req: ModelRequest) -> ModelResponse:
-        model = req.model or self.default_model
+        from app.presets import resolve_runtime_model
+        model = resolve_runtime_model(req.model or self.default_model, backend="ollama")
         if not model:
             raise ModelUnavailable("No model is selected for this assistant")
         try:
@@ -261,6 +270,12 @@ class TransformersModel:
         if not 1 <= max_new_tokens <= 2048:
             raise ModelUnavailable("Invalid generation configuration")
 
+        requested_policy = os.environ.get("MODEL_DATA_POLICY", "auto")
+        if requested_policy not in {"auto", "allow", "block_sensitive", "redact"}:
+            raise ModelUnavailable("Invalid model data policy")
+
+        # Transformers runs locally, so auto defaults to allow.
+        self.data_policy = "allow" if requested_policy == "auto" else requested_policy
         self.model_path = model_path
         self.max_new_tokens = max_new_tokens
 
@@ -270,7 +285,19 @@ class TransformersModel:
                 self.model_path
             )
 
-            messages = build_messages(req)
+            try:
+                messages = protect_messages(
+                    build_messages(req),
+                    self.data_policy
+                )
+            except SensitiveDataError as exc:
+                raise ModelUnavailable(str(exc)) from None
+
+            # Preset aliases change the output budget, not the loaded model.
+            max_new_tokens = PRESET_TOKEN_BUDGETS.get(
+                req.model,
+                self.max_new_tokens
+            )
 
             prompt = tokenizer.apply_chat_template(
                 messages,
@@ -291,7 +318,7 @@ class TransformersModel:
             }
 
             generation_args = {
-                "max_new_tokens": self.max_new_tokens,
+                "max_new_tokens": max_new_tokens,
                 "do_sample": False
             }
 

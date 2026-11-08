@@ -110,4 +110,13 @@ def search_documents(user: User, query: str, limit: int = 5, assistant_id: str |
     with connection() as db:
         rows = db.execute(SQL,(match,user.role,assistant_id,assistant_id,min(120,limit*16))).fetchall()
     ranked = sorted(rows,key=lambda r:(-relevance(r['text'],groups),r['lexical_rank'],r['chunk_id']))
-    return [{k:row[k] for k in ('chunk_id','document_id','filename','page_number','text')} for row in ranked[:limit]]
+    return [
+        {
+            'chunk_id': row['chunk_id'],
+            'document_id': row['document_id'],
+            'filename': row['filename'],
+            'page_number': row['page_number'],
+            'text': best_excerpt(row['text'], query),
+        }
+        for row in ranked[:limit]
+    ]

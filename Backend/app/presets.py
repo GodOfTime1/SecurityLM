@@ -21,15 +21,28 @@ PRESETS = (
 )
 
 
-def resolve_runtime_model(model):
+def resolve_runtime_model(model, backend=None):
     if not model.startswith('preset:'):
         return model
-    preset = next((p for p in PRESETS if model == 'preset:'+p['id']), None)
+
+    preset = next((p for p in PRESETS if model == 'preset:' + p['id']), None)
     if preset is None:
         raise ModelUnavailable('Unknown model preset')
+
+    backend = backend or os.environ.get('MODEL_BACKEND', 'echo')
+
+    # Transformers uses the preset ID to select its token budget.
+    # All presets share the same locally configured model directory.
+    if backend == 'transformers':
+        return model
+
+    # Keep the existing Ollama mapping behavior.
     tag = os.environ.get(preset['env'], '').strip()
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}',tag) or tag.startswith('preset:'):
-        raise ModelUnavailable(f"{preset['name']} needs a real runtime mapping. Configure {preset['env']} on the backend.")
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}', tag) or tag.startswith('preset:'):
+        raise ModelUnavailable(
+            f"{preset['name']} needs a real runtime mapping. "
+            f"Configure {preset['env']} on the backend."
+        )
     return tag
 
 
@@ -37,10 +50,11 @@ def resolve_runtime_model(model):
 def list_presets(user: User = Depends(current_user)):
     with connection() as db:
         existing = {r['id']: json.loads(r['data']) for r in db.execute('SELECT id,data FROM model_catalog')}
+    backend = os.environ.get('MODEL_BACKEND', 'echo')
     items=[]
     for preset in PRESETS:
         try:
-            resolve_runtime_model('preset:'+preset['id'])
+            resolve_runtime_model('preset:' + preset['id'], backend)
             mapped=True
         except ModelUnavailable:
             mapped=False
@@ -88,10 +102,21 @@ def runtime_status(assistant_id: str | None = None, user: User = Depends(current
         return {'state':'demo','demo':True,'configured':True,'connection_checked':False,
                 'message':'Retrieval demo only. No language model is connected.'}
     try:
-        get_model_client()  # Validates URL/timeout/policy without a network call.
-        effective=resolve_runtime_model(selected or os.environ.get('OLLAMA_DEFAULT_MODEL',''))
-        if not effective:
-            raise ModelUnavailable('Select a model and configure its runtime mapping.')
+        client = get_model_client()  # Validates local configuration; no inference.
+        if backend == 'transformers':
+            if selected:
+                resolve_runtime_model(selected, backend)
+            # The Transformers adapter validates TRANSFORMERS_MODEL_PATH.
+            # No Ollama tag or network connection is required.
+        else:
+            effective = resolve_runtime_model(
+                selected or os.environ.get('OLLAMA_DEFAULT_MODEL', ''),
+                backend
+            )
+            if not effective:
+                raise ModelUnavailable(
+                    'Select a model and configure its runtime mapping.'
+                )
     except ModelUnavailable as exc:
         return {'state':'needs_configuration','demo':False,'configured':False,'connection_checked':False,'message':str(exc)}
     return {'state':'configured','demo':False,'configured':True,'connection_checked':False,
@@ -127,8 +152,27 @@ def check_runtime(body: RuntimeCheck,user: User = Depends(admin_user)):
         row=db.execute('SELECT model FROM assistants WHERE id=?',(body.assistant_id,)).fetchone()
     if not row:
         raise HTTPException(404,'Assistant not found')
-    client=get_model_client()
-    model=resolve_runtime_model(row['model'] or os.environ.get('OLLAMA_DEFAULT_MODEL',''))
+    client = get_model_client()
+    backend = os.environ.get('MODEL_BACKEND', 'echo')
+
+    if backend == 'transformers':
+        if row['model']:
+            resolve_runtime_model(row['model'], backend)
+        return {
+            'state': 'configured',
+            'available': True,
+            'demo': False,
+            'connection_checked': False,
+            'message': (
+                'The local model directory is configured. '
+                'GPU loading and inference still need to be tested.'
+            )
+        }
+
+    model = resolve_runtime_model(
+        row['model'] or os.environ.get('OLLAMA_DEFAULT_MODEL', ''),
+        backend
+    )
     if not probe_slots.acquire(blocking=False):
         raise HTTPException(503,'Runtime check is busy; retry shortly')
     async def bounded():

@@ -82,7 +82,7 @@ class SecurityMiddleware:
             while True:
                 try:
                     message = await asyncio.wait_for(receive(), max(0, deadline - time.monotonic()))
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     return await reject(408, 'Request body timed out')
                 if message['type'] == 'http.disconnect':
                     return

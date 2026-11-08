@@ -2,6 +2,10 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+
+# SQLite primary error codes; fallbacks support older Python SQLite builds.
+SQLITE_BUSY = getattr(sqlite3, "SQLITE_BUSY", 5)
+SQLITE_LOCKED = getattr(sqlite3, "SQLITE_LOCKED", 6)
 from pathlib import Path
 
 
@@ -22,7 +26,10 @@ def connection():
             with db:
                 yield db
         except sqlite3.OperationalError as exc:
-            if getattr(exc, 'sqlite_errorcode', 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            code = getattr(exc, 'sqlite_errorcode', 0) or 0
+            is_busy = (code & 255 in (SQLITE_BUSY, SQLITE_LOCKED)
+                       or str(exc).lower() in {"database is locked", "database table is locked"})
+            if is_busy:
                 from fastapi import HTTPException
                 raise HTTPException(503, 'Database is busy; retry shortly', headers={'Retry-After':'1'}) from None
             raise

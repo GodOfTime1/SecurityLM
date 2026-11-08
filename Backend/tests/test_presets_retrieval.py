@@ -1,7 +1,8 @@
 import os
+import tempfile
 from unittest.mock import patch
 from test_chat import ChatBase, FakeModel
-from app.model_client import ModelRequest, ModelResponse, ModelUnavailable, OllamaModel
+from app.model_client import (ModelRequest, ModelResponse, ModelUnavailable, OllamaModel, PRESET_TOKEN_BUDGETS)
 from app.presets import resolve_runtime_model
 
 
@@ -56,6 +57,66 @@ class PresetRetrievalTests(ChatBase):
             with patch.object(model,'_request',request):
                 model.generate(ModelRequest('preset:snake2','','',[],'Hello',[],[]))
             self.assertEqual(seen[0]['model'],'confirmed-local:test')
+
+    def test_transformers_presets_use_distinct_token_budgets(self):
+        expected = {
+            "preset:snake2": 128,
+            "preset:llama4": 256,
+            "preset:megladon8": 512,
+        }
+        self.assertEqual(PRESET_TOKEN_BUDGETS, expected)
+        for preset in expected:
+            self.assertEqual(
+                resolve_runtime_model(preset, backend="transformers"),
+                preset
+            )
+
+    def test_transformers_runtime_uses_local_model_path(self):
+        assistant = self.assistant()
+        self.client.patch(
+            "/assistants/" + assistant["id"],
+            headers=self.admin,
+            json={"model": "preset:llama4"}
+        )
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            env = {
+                "MODEL_BACKEND": "transformers",
+                "TRANSFORMERS_MODEL_PATH": model_dir,
+            }
+            with patch.dict(os.environ, env):
+                presets = self.client.get(
+                    "/model-presets", headers=self.employee
+                ).json()["presets"]
+                self.assertTrue(all(p["runtime_mapped"] for p in presets))
+
+                status = self.client.get(
+                    "/runtime/status?assistant_id=" + assistant["id"],
+                    headers=self.employee
+                ).json()
+                self.assertEqual(status["state"], "configured")
+                self.assertFalse(status["connection_checked"])
+
+                with patch("app.presets._installed_models") as probe:
+                    response = self.client.post(
+                        "/runtime/check",
+                        headers=self.admin,
+                        json={"assistant_id": assistant["id"]}
+                    ).json()
+                probe.assert_not_called()
+
+                self.assertEqual(response["state"], "configured")
+                self.assertTrue(response["available"])
+                self.assertFalse(response["connection_checked"])
+
+    def test_transformers_rejects_invalid_model_directory(self):
+        with patch.dict(os.environ, {
+            "MODEL_BACKEND": "transformers",
+            "TRANSFORMERS_MODEL_PATH": "/path/that/does/not/exist",
+        }):
+            with self.assertRaises(ModelUnavailable):
+                from app.model_client import get_model_client
+                get_model_client()
 
     def test_common_terms_and_plural_forms_retrieve_without_private_leak(self):
         public=self.upload('expenses.md',b'Expense reimbursement requires an itemized receipt.')
