@@ -1,0 +1,47 @@
+NORTHSTAR ROBOTICS - EMPLOYEE QUICK GUIDE
+Version 1.0 | Fictional hackathon test document
+
+All company names, procedures, and policies below are invented for testing.
+This document contains no real employee records, passwords, or API keys.
+
+VPN CONNECTION
+To connect to the company VPN:
+1. Open the Northstar Connect application.
+2. Select the Northstar-Staff connection profile.
+3. Sign in with your company account and complete multifactor authentication.
+4. Wait until the status reads Connected before opening internal applications.
+
+VPN ERROR 42
+VPN error 42 means the connection profile is out of date.
+Disconnect, open Settings, select Refresh Connection Profile, and reconnect.
+If error 42 continues, create an IT support ticket. Include the error number,
+your operating system, and when the problem started. Never include a password
+or an authentication code in a ticket.
+
+SUPPORT HOURS
+The IT help desk is available Monday through Friday, from 9:00 AM to 5:00 PM
+Eastern Time. Routine support tickets have a target first response of one
+business day. This is a response target, not a guaranteed resolution time.
+
+LOST COMPANY LAPTOP
+Report a lost company laptop to the IT help desk immediately. Include its
+asset tag if known. IT will begin the account-protection and device-locking
+process. Do not wait until the next weekly team meeting to report the loss.
+
+REMOTE WORK
+Employees may work remotely up to two days per week with manager approval.
+Use a company-managed device, connect through the VPN for internal services,
+and avoid discussing confidential information in public spaces.
+
+EXPENSE REIMBURSEMENT
+Submit work-related expenses within 30 calendar days of purchase. Attach an
+itemized receipt and a short business justification. Expenses over $250
+require manager approval before purchase.
+
+DOCUMENT AND AI USAGE
+Use only approved company AI tools for internal documents. Do not submit
+customer information, credentials, or restricted documents to a public AI
+service. An AI-generated answer is assistance, not authorization to bypass
+company policy. Ask the appropriate team when a policy is unclear.
+
+END OF FICTIONAL GUIDE
